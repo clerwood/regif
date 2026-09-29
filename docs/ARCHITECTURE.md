@@ -88,6 +88,12 @@ survives (verified: 45 of 45 frames kept versus 21 with `1/fps`).
   from a stage that is no longer shown.
 - GIF stages are shown as an animated `BitmapImage` loaded from memory (so the file stays
   unlocked). Scrubbing a GIF shows still frames from `FrameGrabber`; Play resumes the animation.
+- The crop overlay and the timeline are drawn on `InteractiveSurface` controls (a UserControl
+  that can set the mouse cursor). Their geometry (hit testing, aspect-locked dragging, rounding
+  to a `CropOp`, thumbnail times) lives in `Regif.Core`'s `EditorGeometry` and is unit-tested.
+- Timeline stills come from a second `FrameGrabber` on a background thread
+  (`grabSequence`, one decoding pass for GIFs), cancelled when the stage changes, so they never
+  hold up the preview frame.
 
 ## Testing
 
@@ -99,7 +105,7 @@ survives (verified: 45 of 45 frames kept versus 21 with `1/fps`).
 
 ## Roadmap
 
-- Drag-to-crop overlay on the preview, and a timeline with trim handles.
+- Timeline handles for cutting out a middle section.
 - Video playback in the preview.
 - MP4 (H.264 via Media Foundation, `h264_mf`) export for video stages.
 - Audio passthrough for video stages.

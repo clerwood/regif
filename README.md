@@ -121,8 +121,8 @@ take their version from the tag).
 - Exporting a video stage (for example a trimmed clip before converting) writes lossless FFV1
   Matroska (`.mkv`). It plays in VLC and mpv but not in every player, and it's large. MP4
   export is on the roadmap. Exporting the original (stage 1) writes an exact copy.
-- Crop is entered as numbers; there's no drag-to-crop overlay yet.
-- Video preview is a scrubbable still frame rather than playback. GIFs animate.
+- Video preview is a still frame you scrub on the timeline rather than playback. GIFs animate.
+- Cutting out a middle section is entered as numbers; the timeline handles only trim the ends.
 - AV1 videos need FFmpeg's `dav1d` feature, which isn't enabled in `vcpkg.json` yet.
 - Mirrored (flipped) phone videos are shown rotated but not un-mirrored.
 
