@@ -4,7 +4,11 @@
 
 #include <regif/EditorGeometry.h>
 #include <regif/FrameGrabber.h>
+#include <regif/TextRenderer.h>
 #include <regif/Session.h>
+
+#include <functional>
+#include <map>
 
 namespace winrt::Regif::implementation {
 
@@ -44,18 +48,36 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnTrimValueChanged(Microsoft::UI::Xaml::Controls::NumberBox const& sender,
                             Microsoft::UI::Xaml::Controls::NumberBoxValueChangedEventArgs const& args);
 
-    // Preview and crop overlay
+    // Text panel (MainWindow.Text.cpp)
+    void OnTextTrackChanged(winrt::Windows::Foundation::IInspectable const& sender,
+                            Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& args);
+    void OnAddTrackClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
+    winrt::fire_and_forget OnRemoveTrackClick(winrt::Windows::Foundation::IInspectable sender, Microsoft::UI::Xaml::RoutedEventArgs args);
+    void OnAddTextClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
+    void OnDeleteTextClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
+    void OnTextContentChanged(winrt::Windows::Foundation::IInspectable const& sender,
+                              Microsoft::UI::Xaml::Controls::TextChangedEventArgs const& args);
+    void OnTextNumberChanged(Microsoft::UI::Xaml::Controls::NumberBox const& sender,
+                             Microsoft::UI::Xaml::Controls::NumberBoxValueChangedEventArgs const& args);
+    void OnTextFontChanged(winrt::Windows::Foundation::IInspectable const& sender,
+                           Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& args);
+    void OnTextToggleClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
+    void OnTextAlignClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
+    void OnTextColorChanged(Microsoft::UI::Xaml::Controls::ColorPicker const& sender,
+                            Microsoft::UI::Xaml::Controls::ColorChangedEventArgs const& args);
+
+    // Preview: crop overlay and text
     void OnPlayClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
-    void OnCropSurfaceSizeChanged(winrt::Windows::Foundation::IInspectable const& sender,
-                                  Microsoft::UI::Xaml::SizeChangedEventArgs const& args);
-    void OnCropPointerPressed(winrt::Windows::Foundation::IInspectable const& sender,
-                              Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
-    void OnCropPointerMoved(winrt::Windows::Foundation::IInspectable const& sender,
-                            Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
-    void OnCropPointerReleased(winrt::Windows::Foundation::IInspectable const& sender,
+    void OnPreviewSurfaceSizeChanged(winrt::Windows::Foundation::IInspectable const& sender,
+                                     Microsoft::UI::Xaml::SizeChangedEventArgs const& args);
+    void OnPreviewPointerPressed(winrt::Windows::Foundation::IInspectable const& sender,
+                                 Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
+    void OnPreviewPointerMoved(winrt::Windows::Foundation::IInspectable const& sender,
                                Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
-    void OnCropPointerCaptureLost(winrt::Windows::Foundation::IInspectable const& sender,
+    void OnPreviewPointerReleased(winrt::Windows::Foundation::IInspectable const& sender,
                                   Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
+    void OnPreviewPointerCaptureLost(winrt::Windows::Foundation::IInspectable const& sender,
+                                     Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
 
     // Timeline
     void OnTimelineSizeChanged(winrt::Windows::Foundation::IInspectable const& sender,
@@ -70,6 +92,8 @@ struct MainWindow : MainWindowT<MainWindow> {
                                       Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
     void OnTimelineKeyDown(winrt::Windows::Foundation::IInspectable const& sender,
                            Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
+    void OnTimelineDoubleTapped(winrt::Windows::Foundation::IInspectable const& sender,
+                                Microsoft::UI::Xaml::Input::DoubleTappedRoutedEventArgs const& args);
     void OnDragOver(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::DragEventArgs const& args);
     winrt::fire_and_forget OnDrop(winrt::Windows::Foundation::IInspectable sender, Microsoft::UI::Xaml::DragEventArgs args);
 
@@ -91,15 +115,42 @@ private:
         double top = 0.0;
         explicit operator bool() const { return scale > 0.0; }
     };
-    PreviewLayout CropLayout();
+    PreviewLayout CropLayout(); // the frame's placement inside PreviewSurface
     double LockedAspect(); // width / height, 0 for Free
     void ResetCrop();
     void CreateCropShapes();
     void LayoutCropOverlay();
     void SyncCropBoxes();
 
+    // Text (MainWindow.Text.cpp). Clips are always read fresh from the session, in the current
+    // stage's coordinates; the cache only holds FFmpeg's rendering of each clip's text and style.
+    struct TextVisual {
+        std::string text;                       // what `rendered` shows
+        ::regif::TextStyle style;
+        ::regif::RenderedText rendered;
+        Microsoft::UI::Xaml::Controls::Image image{ nullptr };
+        std::string wantedText;                 // what should be shown
+        ::regif::TextStyle wantedStyle;
+        bool inFlight = false;
+        bool failed = false;
+    };
+    void InitializeText();
+    ::regif::TextStyle DefaultTextStyle();
+    std::optional<::regif::TextClip> SelectedClip();
+    void SelectClip(std::uint64_t clipId);
+    void EditSelectedClip(const std::function<void(::regif::TextClip&)>& edit);
+    void AddTextAt(std::uint64_t trackId, double seconds);
+    void RefreshTextPanel();
+    void RefreshTextVisuals();
+    winrt::fire_and_forget RenderTextVisual(std::uint64_t clipId);
+    void LayoutTextOverlay();
+    void LayoutLanes();
+    std::optional<::regif::TextClip> TextClipAt(double x, double y); // preview surface point, topmost first
+    int LaneAt(double y);
+    double TimelineHeight();
+
     // Timeline
-    enum class TimelineDrag { None, Seek, TrimStart, TrimEnd };
+    enum class TimelineDrag { None, Seek, TrimStart, TrimEnd, ClipMove, ClipStart, ClipEnd };
     double TimelineDuration();
     double TimelineX(double seconds);
     double TimelineSeconds(double x);
@@ -138,7 +189,7 @@ private:
     ::regif::CropRect m_crop;
     ::regif::CropRect m_cropDragStart;
     ::regif::CropHandle m_cropDrag = ::regif::CropHandle::None;
-    winrt::Windows::Foundation::Point m_cropDragOrigin{};
+    winrt::Windows::Foundation::Point m_previewDragOrigin{}; // where a crop or text drag began
     bool m_cropEditing = true; // the Crop section is expanded
     bool m_syncingCrop = false;
     std::vector<Microsoft::UI::Xaml::Shapes::Rectangle> m_cropShades; // top, bottom, left, right
@@ -151,6 +202,16 @@ private:
     std::vector<Microsoft::UI::Xaml::Controls::Image> m_thumbnails; // one slot per still, empty until decoded
     std::shared_ptr<std::atomic_bool> m_thumbnailCancel;
     Microsoft::UI::Dispatching::DispatcherQueueTimer m_thumbnailTimer{ nullptr }; // debounces resizes
+    ::regif::TextClip m_clipDragStart; // the dragged clip as it was when the drag began
+
+    // Text
+    std::map<std::uint64_t, TextVisual> m_textVisuals;
+    std::uint64_t m_selectedTrack = 0;
+    std::uint64_t m_selectedClip = 0;
+    bool m_textDragging = false;
+    bool m_updatingText = false; // filling the text panel from a clip
+    bool m_playing = false;      // the GIF animation is showing, so text for one time would be wrong
+    Microsoft::UI::Xaml::Shapes::Rectangle m_textSelection{ nullptr };
 };
 
 } // namespace winrt::Regif::implementation

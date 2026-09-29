@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "MainWindow.xaml.h"
+#include "UiHelpers.h"
 #if __has_include("MainWindow.g.cpp")
 #include "MainWindow.g.cpp"
 #endif
@@ -37,23 +38,6 @@ using ::regif::CropHandle;
 
 namespace winrt::Regif::implementation {
 namespace {
-
-// Resumes a coroutine on the UI thread. Yields false when the window is shutting down, in
-// which case the caller must stop without touching XAML objects.
-struct ResumeOn {
-    winrt::Microsoft::UI::Dispatching::DispatcherQueue queue;
-    bool enqueued = true;
-
-    bool await_ready() const { return queue.HasThreadAccess(); }
-    bool await_suspend(std::coroutine_handle<> handle)
-    {
-        // Once enqueued the coroutine may resume (and this awaiter vanish) at any moment.
-        if (queue.TryEnqueue([handle] { handle.resume(); })) return true;
-        enqueued = false;
-        return false;
-    }
-    bool await_resume() const noexcept { return enqueued; }
-};
 
 constexpr std::array kOpenExtensions{ L".gif", L".mp4", L".mov", L".m4v", L".mkv", L".webm",
                                       L".avi", L".wmv", L".mpg", L".mpeg", L".ts", L".flv" };
@@ -92,24 +76,6 @@ winrt::fire_and_forget CleanupStaleSessionsAsync()
     }
 }
 
-std::wstring Wide(std::string_view utf8)
-{
-    return std::wstring(winrt::to_hstring(utf8));
-}
-
-std::wstring ErrorMessage(std::exception_ptr error)
-{
-    try {
-        std::rethrow_exception(error);
-    } catch (winrt::hresult_error const& e) {
-        return std::wstring(e.message());
-    } catch (std::exception const& e) {
-        return Wide(e.what());
-    } catch (...) {
-        return L"Something unexpected went wrong.";
-    }
-}
-
 std::vector<std::uint8_t> ReadAllBytes(const fs::path& file)
 {
     const auto size = fs::file_size(file);
@@ -119,24 +85,6 @@ std::vector<std::uint8_t> ReadAllBytes(const fs::path& file)
     if (!in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
         throw std::runtime_error("Couldn't read " + ::regif::pathToUtf8(file));
     return bytes;
-}
-
-double Value(NumberBox const& box, double fallback)
-{
-    const double value = box.Value();
-    return std::isnan(value) ? fallback : value;
-}
-
-int IntValue(NumberBox const& box, int fallback)
-{
-    const double value = box.Value();
-    return std::isnan(value) ? fallback : static_cast<int>(std::lround(value));
-}
-
-bool Checked(CheckBox const& box)
-{
-    const auto value = box.IsChecked();
-    return value && value.Value();
 }
 
 ::regif::Dither DitherFromIndex(int index)
@@ -160,20 +108,6 @@ void UseDecimalFormat(NumberBox const& box, double increment)
     formatter.FractionDigits(2);
     formatter.NumberRounder(rounder);
     box.NumberFormatter(formatter);
-}
-
-Visibility VisibleIf(bool condition)
-{
-    return condition ? Visibility::Visible : Visibility::Collapsed;
-}
-
-void Place(UIElement const& element, double left, double top, double width, double height)
-{
-    Canvas::SetLeft(element, left);
-    Canvas::SetTop(element, top);
-    auto fe = element.as<FrameworkElement>();
-    fe.Width(std::max(0.0, width));
-    fe.Height(std::max(0.0, height));
 }
 
 // Crop overlay, in screen pixels.
@@ -200,12 +134,6 @@ InputSystemCursorShape CursorFor(CropHandle handle)
     }
 }
 
-// Timeline, in screen pixels. The filmstrip sits between the two trim handles' widths.
-constexpr double kHandleWidth = 12.0;
-constexpr double kStripTop = 6.0;
-constexpr double kStripHeight = 56.0;
-constexpr double kTimelineHeight = 68.0;
-constexpr int kMaxThumbnails = 48;
 
 } // namespace
 
@@ -221,6 +149,7 @@ void MainWindow::InitializeComponent()
     for (NumberBox box : { TrimStart(), TrimEnd(), CutStart(), CutEnd() }) UseDecimalFormat(box, 0.01);
     UseDecimalFormat(SpeedFactor(), 0.05);
     CreateCropShapes();
+    InitializeText();
 
     m_thumbnailTimer = DispatcherQueue().CreateTimer();
     m_thumbnailTimer.Interval(std::chrono::milliseconds(250));
@@ -326,6 +255,9 @@ winrt::fire_and_forget MainWindow::OpenFile(fs::path path)
     Title(winrt::hstring(path.filename().wstring() + L" \u2013 regif"));
     StatusBar().IsOpen(false);
     m_playheadSec = 0.0;
+    m_textVisuals.clear();
+    m_selectedTrack = 0;
+    m_selectedClip = 0;
     ResetInputs();
     ShowCurrentStage();
 }
@@ -338,7 +270,8 @@ winrt::fire_and_forget MainWindow::OnExportClick(IInspectable, RoutedEventArgs)
 
     const ::regif::Stage& stage = m_session->current();
     const bool isGif = stage.info.kind == ::regif::MediaKind::Gif;
-    std::wstring extension = stage.file.extension().wstring();
+    const bool withText = m_session->exportBurnsInText(); // renders instead of copying
+    std::wstring extension = Wide(m_session->exportExtension());
     if (extension.empty()) extension = isGif ? L".gif" : L".mkv";
 
     pickers::FileSavePicker picker;
@@ -358,19 +291,31 @@ winrt::fire_and_forget MainWindow::OnExportClick(IInspectable, RoutedEventArgs)
     if (!co_await ResumeOn{ queue } || !file || m_closed || !m_session || m_busy) co_return;
 
     const fs::path destination(std::wstring(file.Path()));
-    SetBusy(true, L"Exporting");
+    SetBusy(true, withText ? L"Exporting with text" : L"Exporting");
     ::regif::Session* session = m_session.get();
+    auto cancel = m_cancel;
+    cancel->reset();
+    ::regif::ProgressCallback progress = [queue, weak = get_weak()](double fraction) {
+        queue.TryEnqueue([weak, fraction] {
+            if (auto self = weak.get()) self->ReportProgress(fraction);
+        });
+    };
+    bool cancelled = false;
     std::exception_ptr error;
     co_await winrt::resume_background();
     try {
-        session->exportCurrent(destination);
+        session->exportCurrent(destination, progress, cancel.get());
+    } catch (::regif::OperationCancelled const&) {
+        cancelled = true;
     } catch (...) {
         error = std::current_exception();
     }
     if (!co_await ResumeOn{ queue } || m_closed) co_return;
 
     SetBusy(false);
-    if (error) {
+    if (cancelled) {
+        ShowStatus(InfoBarSeverity::Informational, L"Export cancelled", L"Nothing was written.");
+    } else if (error) {
         ShowError(L"Couldn't export", error);
     } else {
         ShowStatus(InfoBarSeverity::Success, L"Exported", winrt::hstring(destination.wstring()));
@@ -529,8 +474,11 @@ winrt::fire_and_forget MainWindow::ShowCurrentStage()
     m_grabber.reset();
     m_gifBitmap = nullptr;
     PreviewImage().Source(nullptr);
+    m_playing = false;
     RefreshUi();
     LoadThumbnails();
+    RefreshTextVisuals(); // stages can move, retime or rescale text
+    RefreshTextPanel();
     if (!m_session) co_return;
 
     const ::regif::Stage stage = m_session->current();
@@ -629,6 +577,8 @@ void MainWindow::OnPlayClick(IInspectable const&, RoutedEventArgs const&)
     m_pendingFrameTime.reset();
     PreviewImage().Source(m_gifBitmap);
     m_gifBitmap.Play();
+    m_playing = true; // text is shown for one moment, so hide it while the GIF plays
+    LayoutTextOverlay();
 }
 
 void MainWindow::SetPlayhead(double seconds, bool showFrame)
@@ -637,6 +587,8 @@ void MainWindow::SetPlayhead(double seconds, bool showFrame)
     m_playheadSec = std::clamp(seconds, 0.0, TimelineDuration());
     PositionText().Text(winrt::hstring(std::format(L"{:.2f} / {:.2f} s", m_playheadSec, TimelineDuration())));
     Canvas::SetLeft(Playhead(), TimelineX(m_playheadSec) - 1.0);
+    m_playing = false;
+    LayoutTextOverlay();
     if (showFrame) RequestFrame(m_playheadSec);
 }
 
@@ -673,14 +625,14 @@ void MainWindow::CreateCropShapes()
     }
 }
 
-// Where the frame is drawn inside CropSurface. The surface has the image's margin, and the
+// Where the frame is drawn inside PreviewSurface. The surface has the image's margin, and the
 // image is Stretch="Uniform", so the frame is scaled to fit and centred.
 MainWindow::PreviewLayout MainWindow::CropLayout()
 {
     if (!m_session) return {};
     const auto& info = m_session->current().info;
-    const double width = CropSurface().ActualWidth();
-    const double height = CropSurface().ActualHeight();
+    const double width = PreviewSurface().ActualWidth();
+    const double height = PreviewSurface().ActualHeight();
     if (info.width <= 0 || info.height <= 0 || width <= 0 || height <= 0) return {};
     const double scale = std::min(width / info.width, height / info.height);
     return { scale, (width - info.width * scale) / 2, (height - info.height * scale) / 2 };
@@ -729,7 +681,8 @@ void MainWindow::LayoutCropOverlay()
 {
     const bool visible = m_session && m_cropEditing && m_session->current().info.width > 0 &&
                          m_session->current().info.height > 0;
-    CropSurface().Visibility(VisibleIf(visible));
+    PreviewSurface().Visibility(VisibleIf(m_session != nullptr));
+    CropCanvas().Visibility(VisibleIf(visible));
     const PreviewLayout layout = visible ? CropLayout() : PreviewLayout{};
     if (!layout) return; // laid out again from SizeChanged once the surface has a size
 
@@ -783,58 +736,88 @@ void MainWindow::OnCropCollapsed(Expander const&, ExpanderCollapsedEventArgs con
     LayoutCropOverlay();
 }
 
-void MainWindow::OnCropSurfaceSizeChanged(IInspectable const&, SizeChangedEventArgs const&)
+void MainWindow::OnPreviewSurfaceSizeChanged(IInspectable const&, SizeChangedEventArgs const&)
 {
     LayoutCropOverlay();
+    LayoutTextOverlay();
 }
 
-void MainWindow::OnCropPointerPressed(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+// One surface serves the crop rectangle and the text. Crop edges and corners win, then text
+// (so it can be dragged inside the crop rectangle), then moving the crop rectangle.
+void MainWindow::OnPreviewPointerPressed(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
 {
     const PreviewLayout layout = CropLayout();
     if (m_busy || !layout) return;
-    const auto p = args.GetCurrentPoint(CropSurface()).Position();
-    const CropHandle handle = ::regif::hitTestCrop(m_crop, (p.X - layout.left) / layout.scale,
-                                                   (p.Y - layout.top) / layout.scale, kCropGrip / layout.scale);
-    if (handle == CropHandle::None) return;
-    m_cropDrag = handle;
-    m_cropDragStart = m_crop;
-    m_cropDragOrigin = p;
-    CropSurface().CapturePointer(args.Pointer());
+    const auto p = args.GetCurrentPoint(PreviewSurface()).Position();
+    const CropHandle handle =
+        m_cropEditing ? ::regif::hitTestCrop(m_crop, (p.X - layout.left) / layout.scale, (p.Y - layout.top) / layout.scale,
+                                             kCropGrip / layout.scale)
+                      : CropHandle::None;
+    const bool resizing = handle != CropHandle::None && handle != CropHandle::Move;
+    const std::optional<::regif::TextClip> text = resizing ? std::nullopt : TextClipAt(p.X, p.Y);
+
+    m_previewDragOrigin = p;
+    if (text) {
+        SelectClip(text->id);
+        m_textDragging = true;
+        m_clipDragStart = *text;
+    } else if (handle != CropHandle::None) {
+        m_cropDrag = handle;
+        m_cropDragStart = m_crop;
+    } else {
+        SelectClip(0); // clicking the picture itself deselects text
+        return;
+    }
+    PreviewSurface().CapturePointer(args.Pointer());
     args.Handled(true);
 }
 
-void MainWindow::OnCropPointerMoved(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+void MainWindow::OnPreviewPointerMoved(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
 {
     const PreviewLayout layout = CropLayout();
     if (!layout) return;
-    const auto p = args.GetCurrentPoint(CropSurface()).Position();
+    const auto p = args.GetCurrentPoint(PreviewSurface()).Position();
+    const double dx = (p.X - m_previewDragOrigin.X) / layout.scale;
+    const double dy = (p.Y - m_previewDragOrigin.Y) / layout.scale;
+
+    if (m_textDragging) {
+        EditSelectedClip([&](::regif::TextClip& clip) {
+            clip.x = m_clipDragStart.x + dx;
+            clip.y = m_clipDragStart.y + dy;
+        });
+        args.Handled(true);
+        return;
+    }
     if (m_cropDrag == CropHandle::None) {
-        const CropHandle hover = ::regif::hitTestCrop(m_crop, (p.X - layout.left) / layout.scale,
-                                                      (p.Y - layout.top) / layout.scale, kCropGrip / layout.scale);
-        CropSurface().SetCursor(CursorFor(m_busy ? CropHandle::None : hover));
+        CropHandle hover = m_cropEditing ? ::regif::hitTestCrop(m_crop, (p.X - layout.left) / layout.scale,
+                                                                (p.Y - layout.top) / layout.scale, kCropGrip / layout.scale)
+                                         : CropHandle::None;
+        if ((hover == CropHandle::None || hover == CropHandle::Move) && TextClipAt(p.X, p.Y)) hover = CropHandle::Move;
+        PreviewSurface().SetCursor(CursorFor(m_busy ? CropHandle::None : hover));
         return;
     }
 
     const auto& info = m_session->current().info;
-    m_crop = ::regif::dragCrop(m_cropDragStart, m_cropDrag, (p.X - m_cropDragOrigin.X) / layout.scale,
-                               (p.Y - m_cropDragOrigin.Y) / layout.scale, info.width, info.height, LockedAspect(),
+    m_crop = ::regif::dragCrop(m_cropDragStart, m_cropDrag, dx, dy, info.width, info.height, LockedAspect(),
                                kCropMinSize / layout.scale);
     SyncCropBoxes();
     LayoutCropOverlay();
     args.Handled(true);
 }
 
-void MainWindow::OnCropPointerReleased(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+void MainWindow::OnPreviewPointerReleased(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
 {
-    if (m_cropDrag == CropHandle::None) return;
+    if (m_cropDrag == CropHandle::None && !m_textDragging) return;
     m_cropDrag = CropHandle::None;
-    CropSurface().ReleasePointerCapture(args.Pointer());
+    m_textDragging = false;
+    PreviewSurface().ReleasePointerCapture(args.Pointer());
     args.Handled(true);
 }
 
-void MainWindow::OnCropPointerCaptureLost(IInspectable const&, xinput::PointerRoutedEventArgs const&)
+void MainWindow::OnPreviewPointerCaptureLost(IInspectable const&, xinput::PointerRoutedEventArgs const&)
 {
     m_cropDrag = CropHandle::None;
+    m_textDragging = false;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -941,9 +924,11 @@ void MainWindow::AddThumbnail(std::size_t index, int count, const ::regif::Video
 
 void MainWindow::LayoutTimeline()
 {
+    TimelineSurface().Height(TimelineHeight());
     const double strip = std::max(0.0, TimelineSurface().ActualWidth() - 2 * kHandleWidth);
     const double duration = TimelineDuration();
     const bool active = m_session && duration > 0.0 && strip > 0.0;
+    LayoutLanes();
 
     Place(FilmstripBackground(), kHandleWidth, kStripTop, strip, kStripHeight);
     Place(FilmstripCanvas(), kHandleWidth, kStripTop, strip, kStripHeight);
@@ -971,7 +956,7 @@ void MainWindow::LayoutTimeline()
     Place(TrimFrame(), xs, kStripTop - 3, xe - xs, kStripHeight + 6);
     Place(TrimHandleStart(), xs - kHandleWidth, kStripTop - 3, kHandleWidth, kStripHeight + 6);
     Place(TrimHandleEnd(), xe, kStripTop - 3, kHandleWidth, kStripHeight + 6);
-    Place(Playhead(), TimelineX(m_playheadSec) - 1.0, 0, 2, kTimelineHeight);
+    Place(Playhead(), TimelineX(m_playheadSec) - 1.0, 0, 2, TimelineHeight());
 }
 
 void MainWindow::SetTrimPoint(bool start, double seconds)
@@ -1009,7 +994,36 @@ void MainWindow::OnTimelinePointerPressed(IInspectable const&, xinput::PointerRo
 {
     if (!m_session || m_busy || TimelineDuration() <= 0.0) return;
     TimelineSurface().Focus(FocusState::Pointer);
-    const double x = args.GetCurrentPoint(TimelineSurface()).Position().X;
+    const auto point = args.GetCurrentPoint(TimelineSurface()).Position();
+    const double x = point.X;
+
+    if (const int lane = LaneAt(point.Y); lane >= 0) {
+        const ::regif::TextLayer layer = m_session->textLayer();
+        const ::regif::TextTrack& track = layer.tracks[static_cast<std::size_t>(lane)];
+        m_selectedTrack = track.id;
+        m_timelineGrabOffset = x;
+        m_timelineDrag = TimelineDrag::Seek;
+        for (auto it = track.clips.rbegin(); it != track.clips.rend(); ++it) { // the last one draws on top
+            const double cs = TimelineX(it->startSec), ce = TimelineX(it->endSec);
+            if (x < cs - 4 || x > ce + 4) continue;
+            const double edge = std::min(6.0, (ce - cs) / 3);
+            m_timelineDrag = x <= cs + edge ? TimelineDrag::ClipStart
+                           : x >= ce - edge ? TimelineDrag::ClipEnd
+                                            : TimelineDrag::ClipMove;
+            m_clipDragStart = *it;
+            SelectClip(it->id);
+            if (!::regif::isVisibleAt(*it, m_playheadSec)) SetPlayhead(it->startSec);
+            break;
+        }
+        if (m_timelineDrag == TimelineDrag::Seek) {
+            SelectClip(0);
+            SetPlayhead(TimelineSeconds(x));
+        }
+        TimelineSurface().CapturePointer(args.Pointer());
+        args.Handled(true);
+        return;
+    }
+
     const double xs = TimelineX(Value(TrimStart(), 0.0));
     const double xe = TimelineX(Value(TrimEnd(), TimelineDuration()));
     const bool onStart = x >= xs - kHandleWidth - 2 && x <= xs + 3;
@@ -1032,15 +1046,52 @@ void MainWindow::OnTimelinePointerPressed(IInspectable const&, xinput::PointerRo
 void MainWindow::OnTimelinePointerMoved(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
 {
     if (!m_session) return;
-    const double x = args.GetCurrentPoint(TimelineSurface()).Position().X;
+    const auto point = args.GetCurrentPoint(TimelineSurface()).Position();
+    const double x = point.X;
+    const double duration = TimelineDuration();
+    const double strip = TimelineSurface().ActualWidth() - 2 * kHandleWidth;
+    const double shift = strip > 0.0 ? (x - m_timelineGrabOffset) / strip * duration : 0.0; // for clip drags
+    const ::regif::TextClip& from = m_clipDragStart;
     switch (m_timelineDrag) {
     case TimelineDrag::None: {
-        const double xs = TimelineX(Value(TrimStart(), 0.0));
-        const double xe = TimelineX(Value(TrimEnd(), TimelineDuration()));
-        const bool onHandle = (x >= xs - kHandleWidth - 2 && x <= xs + 3) || (x >= xe - 3 && x <= xe + kHandleWidth + 2);
+        bool onHandle = false;
+        if (const int lane = LaneAt(point.Y); lane >= 0) {
+            const ::regif::TextLayer layer = m_session->textLayer();
+            for (const auto& clip : layer.tracks[static_cast<std::size_t>(lane)].clips) {
+                const double cs = TimelineX(clip.startSec), ce = TimelineX(clip.endSec);
+                const double edge = std::min(6.0, (ce - cs) / 3);
+                onHandle |= (x >= cs - 4 && x <= cs + edge) || (x >= ce - edge && x <= ce + 4);
+            }
+        } else {
+            const double xs = TimelineX(Value(TrimStart(), 0.0));
+            const double xe = TimelineX(Value(TrimEnd(), duration));
+            onHandle = (x >= xs - kHandleWidth - 2 && x <= xs + 3) || (x >= xe - 3 && x <= xe + kHandleWidth + 2);
+        }
         TimelineSurface().SetCursor(onHandle && !m_busy ? InputSystemCursorShape::SizeWestEast
                                                         : InputSystemCursorShape::Arrow);
         return;
+    }
+    case TimelineDrag::ClipMove: {
+        const double length = from.endSec - from.startSec;
+        const double start = std::clamp(from.startSec + shift, 0.0, std::max(0.0, duration - length));
+        EditSelectedClip([&](::regif::TextClip& clip) {
+            clip.startSec = start;
+            clip.endSec = start + length;
+        });
+        SetPlayhead(start);
+        break;
+    }
+    case TimelineDrag::ClipStart: {
+        const double start = std::clamp(from.startSec + shift, 0.0, std::max(0.0, from.endSec - FrameStep()));
+        EditSelectedClip([&](::regif::TextClip& clip) { clip.startSec = start; });
+        SetPlayhead(start);
+        break;
+    }
+    case TimelineDrag::ClipEnd: {
+        const double end = std::clamp(from.endSec + shift, std::min(duration, from.startSec + FrameStep()), duration);
+        EditSelectedClip([&](::regif::TextClip& clip) { clip.endSec = end; });
+        SetPlayhead(std::max(from.startSec, end - FrameStep())); // the last frame it shows on
+        break;
     }
     case TimelineDrag::Seek: SetPlayhead(TimelineSeconds(x)); break;
     case TimelineDrag::TrimStart: SetTrimPoint(true, TimelineSeconds(x - m_timelineGrabOffset)); break;
@@ -1060,6 +1111,28 @@ void MainWindow::OnTimelinePointerReleased(IInspectable const&, xinput::PointerR
 void MainWindow::OnTimelinePointerCaptureLost(IInspectable const&, xinput::PointerRoutedEventArgs const&)
 {
     m_timelineDrag = TimelineDrag::None;
+}
+
+void MainWindow::OnTimelineDoubleTapped(IInspectable const&, xinput::DoubleTappedRoutedEventArgs const& args)
+{
+    if (!m_session || m_busy) return;
+    const auto point = args.GetPosition(TimelineSurface());
+    const int lane = LaneAt(point.Y);
+    if (lane < 0) return;
+    const ::regif::TextLayer layer = m_session->textLayer();
+    const ::regif::TextTrack& track = layer.tracks[static_cast<std::size_t>(lane)];
+    const double t = TimelineSeconds(point.X);
+    for (const auto& clip : track.clips) {
+        if (::regif::isVisibleAt(clip, t)) { // on a clip: edit its text
+            SelectClip(clip.id);
+            TextContent().Focus(FocusState::Programmatic);
+            TextContent().SelectAll();
+            args.Handled(true);
+            return;
+        }
+    }
+    AddTextAt(track.id, t);
+    args.Handled(true);
 }
 
 void MainWindow::OnTimelineKeyDown(IInspectable const&, xinput::KeyRoutedEventArgs const& args)
@@ -1117,7 +1190,7 @@ void MainWindow::RefreshUi()
     HistoryHeader().Visibility(VisibleIf(hasSession));
     HistoryList().IsEnabled(idle);
     ScrubPanel().Visibility(VisibleIf(hasSession));
-    CropSurface().IsHitTestVisible(idle);
+    PreviewSurface().IsHitTestVisible(idle);
 
     auto items = HistoryList().Items();
     items.Clear();
@@ -1125,6 +1198,7 @@ void MainWindow::RefreshUi()
         StageTitle().Text(L"No file open");
         StageDetails().Text(L"");
         LayoutCropOverlay();
+        LayoutTextOverlay();
         LayoutTimeline();
         m_updatingUi = false;
         return;
@@ -1155,6 +1229,7 @@ void MainWindow::RefreshUi()
     HistoryList().SelectedIndex(static_cast<int32_t>(current));
 
     LayoutCropOverlay();
+    LayoutTextOverlay();
     LayoutTimeline();
     m_updatingUi = false;
 }

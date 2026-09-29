@@ -40,6 +40,24 @@ the scrubber.
   removes its folder; at start-up, folders older than 7 days (from crashes) are removed. Only
   folders with the `session-` prefix are ever deleted.
 
+## Text overlays
+
+Text is a live layer rather than a stage (`TextLayer.h`). `Session` stores tracks of clips in the
+*original* file's coordinates and time. `textLayer()` maps them forward through each stage's
+operation (crops move them, trims/cuts/speed changes retime them, resizes scale them), and edits
+made at a later stage are mapped back before they're stored, so undo, redo and new edits never
+lose text. Export with text renders `planBurnIn` (one `drawtext` per clip, `enable` for its time
+range) instead of copying.
+
+The preview uses the same `drawtext` filter: `renderText` (Regif.Media) draws one clip on a
+transparent canvas and returns it cropped, with its offset from the anchor. drawtext's output is
+already premultiplied. Moving text only moves that image; text or style changes re-render it in
+the background. A test checks that exported pixels land where the preview draws them.
+
+Filter option values are escaped for both parsing levels (`escapeFilterValue`); text uses
+`expansion=none`. Fonts come from DirectWrite's system collection (`FontCatalog`), resolved to a
+file per family/bold/italic, because drawtext loads files, and only a file's first face.
+
 ## Render plans
 
 Each plan's graph has one unlabeled input and output, and the renderer connects them to a

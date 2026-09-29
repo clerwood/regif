@@ -62,16 +62,20 @@
                 <Grid>
                     <Image x:Name="PreviewImage" Stretch="Uniform" Margin="12" />
                     <!-- Same margin as the image, so both lay out in the same box. -->
+                    <!-- Text overlays (drawn by FFmpeg) under the crop rectangle; one surface handles both. -->
                     <local:InteractiveSurface
-                        x:Name="CropSurface"
+                        x:Name="PreviewSurface"
                         Margin="12"
                         Visibility="Collapsed"
-                        SizeChanged="OnCropSurfaceSizeChanged"
-                        PointerPressed="OnCropPointerPressed"
-                        PointerMoved="OnCropPointerMoved"
-                        PointerReleased="OnCropPointerReleased"
-                        PointerCaptureLost="OnCropPointerCaptureLost">
-                        <Canvas x:Name="CropCanvas" Background="Transparent" />
+                        SizeChanged="OnPreviewSurfaceSizeChanged"
+                        PointerPressed="OnPreviewPointerPressed"
+                        PointerMoved="OnPreviewPointerMoved"
+                        PointerReleased="OnPreviewPointerReleased"
+                        PointerCaptureLost="OnPreviewPointerCaptureLost">
+                        <Grid Background="Transparent">
+                            <Canvas x:Name="TextCanvas" IsHitTestVisible="False" />
+                            <Canvas x:Name="CropCanvas" IsHitTestVisible="False" />
+                        </Grid>
                     </local:InteractiveSurface>
                     <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12" MaxWidth="360">
                         <FontIcon Glyph="&#xE714;" FontSize="48" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -103,13 +107,14 @@
                     IsTabStop="True"
                     UseSystemFocusVisuals="True"
                     AutomationProperties.Name="Timeline"
-                    ToolTipService.ToolTip="Click or drag to seek. Drag the handles to trim. Arrow keys step, I and O set the trim points."
+                    ToolTipService.ToolTip="Click or drag to seek. Drag the handles to trim, and text clips to move them. Arrow keys step, I and O set the trim points. Double-click a track to add text."
                     SizeChanged="OnTimelineSizeChanged"
                     PointerPressed="OnTimelinePointerPressed"
                     PointerMoved="OnTimelinePointerMoved"
                     PointerReleased="OnTimelinePointerReleased"
                     PointerCaptureLost="OnTimelinePointerCaptureLost"
-                    KeyDown="OnTimelineKeyDown">
+                    KeyDown="OnTimelineKeyDown"
+                    DoubleTapped="OnTimelineDoubleTapped">
                     <Canvas Background="Transparent">
                         <Border x:Name="FilmstripBackground" Background="{ThemeResource ControlAltFillColorSecondaryBrush}" />
                         <Canvas x:Name="FilmstripCanvas" />
@@ -122,6 +127,7 @@
                         <Border x:Name="TrimHandleEnd" Background="{ThemeResource AccentFillColorDefaultBrush}" CornerRadius="0,4,4,0" IsHitTestVisible="False">
                             <Rectangle Width="2" Height="18" RadiusX="1" RadiusY="1" Fill="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
                         </Border>
+                        <Canvas x:Name="LaneCanvas" IsHitTestVisible="False" />
                         <Rectangle x:Name="Playhead" Width="2" RadiusX="1" RadiusY="1" Fill="{ThemeResource TextFillColorPrimaryBrush}" IsHitTestVisible="False" />
                     </Canvas>
                 </local:InteractiveSurface>
@@ -172,6 +178,99 @@
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <Button Content="Crop" Style="{StaticResource AccentButtonStyle}" Click="OnCropClick" />
                                 <Button Content="Reset" Click="OnCropResetClick" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Expander>
+
+                    <Expander x:Name="TextExpander" Header="Text" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Text is drawn in when you export, and stays editable until then. Drag it on the preview to move it, and its clip on the timeline to change when it shows." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="TextTrackBox" Header="Track" HorizontalAlignment="Stretch" PlaceholderText="No tracks yet" SelectionChanged="OnTextTrackChanged" />
+                                <Button Grid.Column="1" VerticalAlignment="Bottom" Click="OnAddTrackClick" ToolTipService.ToolTip="Add a track">
+                                    <SymbolIcon Symbol="Add" />
+                                </Button>
+                                <Button x:Name="RemoveTrackButton" Grid.Column="2" VerticalAlignment="Bottom" Click="OnRemoveTrackClick" ToolTipService.ToolTip="Remove this track and its text">
+                                    <SymbolIcon Symbol="Delete" />
+                                </Button>
+                            </Grid>
+                            <Button Content="Add text at playhead" Style="{StaticResource AccentButtonStyle}" Click="OnAddTextClick" />
+
+                            <StackPanel x:Name="TextClipPanel" Spacing="12" Visibility="Collapsed">
+                                <TextBox x:Name="TextContent" Header="Text" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="64" TextChanged="OnTextContentChanged" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <NumberBox x:Name="TextStart" Header="Shows from (s)" Minimum="0" SmallChange="0.1" SpinButtonPlacementMode="Compact" ValueChanged="OnTextNumberChanged" />
+                                    <NumberBox x:Name="TextEnd" Grid.Column="1" Header="Until (s)" Minimum="0" SmallChange="0.1" SpinButtonPlacementMode="Compact" ValueChanged="OnTextNumberChanged" />
+                                </Grid>
+                                <ComboBox x:Name="TextFont" Header="Font" HorizontalAlignment="Stretch" SelectionChanged="OnTextFontChanged" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <NumberBox x:Name="TextSize" Header="Size (px)" Minimum="4" Maximum="1000" SmallChange="2" SpinButtonPlacementMode="Compact" ValueChanged="OnTextNumberChanged" />
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Bottom">
+                                        <ToggleButton x:Name="TextBold" ToolTipService.ToolTip="Bold" Click="OnTextToggleClick"><FontIcon Glyph="&#xE8DD;" FontSize="14" /></ToggleButton>
+                                        <ToggleButton x:Name="TextItalic" ToolTipService.ToolTip="Italic" Click="OnTextToggleClick"><FontIcon Glyph="&#xE8DB;" FontSize="14" /></ToggleButton>
+                                        <ToggleButton x:Name="TextAlignLeft" ToolTipService.ToolTip="Align left" Click="OnTextAlignClick" Margin="8,0,0,0"><FontIcon Glyph="&#xE8E4;" FontSize="14" /></ToggleButton>
+                                        <ToggleButton x:Name="TextAlignCenter" ToolTipService.ToolTip="Centre" Click="OnTextAlignClick"><FontIcon Glyph="&#xE8E3;" FontSize="14" /></ToggleButton>
+                                        <ToggleButton x:Name="TextAlignRight" ToolTipService.ToolTip="Align right" Click="OnTextAlignClick"><FontIcon Glyph="&#xE8E2;" FontSize="14" /></ToggleButton>
+                                    </StackPanel>
+                                </Grid>
+
+                                <Grid ColumnSpacing="8" RowSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Text="Fill" VerticalAlignment="Center" />
+                                    <Button Grid.Column="1" Padding="4" ToolTipService.ToolTip="Fill colour">
+                                        <Border x:Name="FillSwatch" Width="36" Height="20" CornerRadius="3" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" />
+                                        <Button.Flyout><Flyout><ColorPicker x:Name="FillPicker" IsAlphaEnabled="True" ColorChanged="OnTextColorChanged" /></Flyout></Button.Flyout>
+                                    </Button>
+
+                                    <TextBlock Grid.Row="1" Text="Stroke" VerticalAlignment="Center" />
+                                    <Button Grid.Row="1" Grid.Column="1" Padding="4" ToolTipService.ToolTip="Stroke colour">
+                                        <Border x:Name="StrokeSwatch" Width="36" Height="20" CornerRadius="3" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" />
+                                        <Button.Flyout><Flyout><ColorPicker x:Name="StrokePicker" IsAlphaEnabled="True" ColorChanged="OnTextColorChanged" /></Flyout></Button.Flyout>
+                                    </Button>
+                                    <NumberBox x:Name="StrokeWidth" Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="2" PlaceholderText="Width" Minimum="0" Maximum="100" SpinButtonPlacementMode="Compact" ValueChanged="OnTextNumberChanged" ToolTipService.ToolTip="Stroke width (px), 0 for none" />
+
+                                    <CheckBox x:Name="BoxEnabled" Grid.Row="2" Content="Box" MinWidth="0" Click="OnTextToggleClick" />
+                                    <Button Grid.Row="2" Grid.Column="1" Padding="4" ToolTipService.ToolTip="Box colour">
+                                        <Border x:Name="BoxSwatch" Width="36" Height="20" CornerRadius="3" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" />
+                                        <Button.Flyout><Flyout><ColorPicker x:Name="BoxPicker" IsAlphaEnabled="True" ColorChanged="OnTextColorChanged" /></Flyout></Button.Flyout>
+                                    </Button>
+                                    <NumberBox x:Name="BoxPadding" Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="2" PlaceholderText="Padding" Minimum="0" Maximum="200" SpinButtonPlacementMode="Compact" ValueChanged="OnTextNumberChanged" ToolTipService.ToolTip="Box padding (px)" />
+
+                                    <CheckBox x:Name="ShadowEnabled" Grid.Row="3" Content="Shadow" MinWidth="0" Click="OnTextToggleClick" />
+                                    <Button Grid.Row="3" Grid.Column="1" Padding="4" ToolTipService.ToolTip="Shadow colour">
+                                        <Border x:Name="ShadowSwatch" Width="36" Height="20" CornerRadius="3" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" />
+                                        <Button.Flyout><Flyout><ColorPicker x:Name="ShadowPicker" IsAlphaEnabled="True" ColorChanged="OnTextColorChanged" /></Flyout></Button.Flyout>
+                                    </Button>
+                                    <NumberBox x:Name="ShadowX" Grid.Row="3" Grid.Column="2" PlaceholderText="X" Minimum="-100" Maximum="100" SpinButtonPlacementMode="Compact" ValueChanged="OnTextNumberChanged" ToolTipService.ToolTip="Shadow offset right (px)" />
+                                    <NumberBox x:Name="ShadowY" Grid.Row="3" Grid.Column="3" PlaceholderText="Y" Minimum="-100" Maximum="100" SpinButtonPlacementMode="Compact" ValueChanged="OnTextNumberChanged" ToolTipService.ToolTip="Shadow offset down (px)" />
+                                </Grid>
+                                <TextBlock Text="Colours include opacity: use the alpha slider in each colour picker." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <Button Content="Delete this text" Click="OnDeleteTextClick" />
                             </StackPanel>
                         </StackPanel>
                     </Expander>

@@ -4,6 +4,8 @@ A Windows-native video-to-GIF converter and GIF editor, written in C++ with WinU
 
 **Videos:** crop, trim, cut out a section, convert to GIF.
 **GIFs:** crop, trim, cut out a section, change speed, optimize (colors, dithering, frame rate, size).
+**Text:** titles and subtitles on tracks in the timeline, dragged into place on the preview, with any
+installed font, alignment, fill, stroke, background box, shadow and opacity.
 
 ## Staged, non-destructive editing
 
@@ -18,6 +20,10 @@ original.mp4 ─► stage 1: crop ─► stage 2: trim ─► stage 3: convert t
 Undo, redo or click any entry in the History list to go back to an earlier stage; applying a
 change from there replaces the stages after it. Only **Export** writes a file where you choose,
 and it refuses to overwrite the original.
+
+Text isn't a stage: it stays editable on top of whichever stage you're looking at, follows your
+crops, trims, cuts, speed changes and resizes, and is drawn in when you export. The preview shows
+text exactly as it will be exported, because FFmpeg draws both.
 
 Stages live in `%LOCALAPPDATA%\regif\sessions\` and are deleted when you close the window
 (leftovers from a crash are cleaned up after 7 days). Video stages are stored losslessly
@@ -125,6 +131,12 @@ take their version from the tag).
 - Cutting out a middle section is entered as numbers; the timeline handles only trim the ends.
 - AV1 videos need FFmpeg's `dav1d` feature, which isn't enabled in `vcpkg.json` yet.
 - Mirrored (flipped) phone videos are shown rotated but not un-mirrored.
+
+- Text uses the font files installed on this PC. A few fonts (faces stored later in a `.ttc`
+  collection) aren't offered, and bold or italic is only available when the font has that face.
+- Exporting text re-encodes: GIFs get a new palette (existing colours are kept where possible), and
+  video stages export as FFV1 Matroska even from the original.
+- Text isn't part of undo/redo; delete or edit it directly.
 
 ## License
 
