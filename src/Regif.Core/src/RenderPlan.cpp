@@ -167,6 +167,13 @@ RenderPlan planOperationImpl(const Operation& op, const MediaInfo& in)
 
 } // namespace
 
+RenderPlan planReencode(const MediaInfo& in, std::string_view body)
+{
+    RenderPlan plan = sameKindPlan(in, body);
+    plan.expectedDurationSec = std::max(0.0, in.durationSec);
+    return plan;
+}
+
 RenderPlan planOperation(const Operation& op, const MediaInfo& in)
 {
     RenderPlan plan = planOperationImpl(op, in);

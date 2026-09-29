@@ -3,6 +3,7 @@
 #include <regif/Session.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -399,6 +400,95 @@ TEST_CASE("stale session folders are cleaned up, other folders are not")
     CHECK(fs::exists(unrelated));
 
     Session::cleanupStaleSessions(f.temp.path() / "does-not-exist", std::chrono::hours(1)); // no throw
+}
+
+namespace {
+
+bool closeTo(double a, double b)
+{
+    return std::abs(a - b) < 1e-9;
+}
+
+} // namespace
+
+TEST_CASE("text lives in the original's coordinates across edits, undo and redo")
+{
+    Fixture f;
+    Session session(f.original, f.workRoot, f.processor);
+    const auto track = session.addTextTrack("Subtitles");
+    session.apply(CropOp{ 40, 20, 320, 180 });
+    session.apply(TrimOp{ 2, 6 });
+
+    TextClip c;
+    c.text = "Hi";
+    c.startSec = 1;
+    c.endSec = 2;
+    c.x = 160;
+    c.y = 90;
+    const auto id = session.addTextClip(track, c);
+
+    // From the stage it was added on, it's where it was put.
+    TextLayer layer = session.textLayer();
+    const TextClip* seen = layer.findClip(id);
+    CHECK(seen && closeTo(seen->x, 160) && closeTo(seen->startSec, 1));
+
+    // From the original: before the crop and the trim.
+    session.select(0);
+    layer = session.textLayer();
+    seen = layer.findClip(id);
+    CHECK(seen && closeTo(seen->x, 200) && closeTo(seen->y, 110) && closeTo(seen->startSec, 3) && closeTo(seen->endSec, 4));
+
+    // Edited there, the change shows at the later stage too.
+    TextClip moved = *seen;
+    moved.x = 240;
+    session.updateTextClip(moved);
+    session.select(2);
+    layer = session.textLayer();
+    seen = layer.findClip(id);
+    CHECK(seen && closeTo(seen->x, 200) && closeTo(seen->startSec, 1));
+
+    CHECK_THROWS_AS(session.updateTextClip(TextClip{}), std::invalid_argument);
+    CHECK_THROWS_AS(session.addTextClip(999, c), std::invalid_argument);
+    CHECK_THROWS_AS(session.removeTextTrack(999), std::invalid_argument);
+
+    session.removeTextClip(id);
+    CHECK(session.textLayer().empty());
+    CHECK_EQ(session.textLayer().tracks.size(), std::size_t(1));
+    session.removeTextTrack(track);
+    CHECK(session.textLayer().tracks.empty());
+}
+
+TEST_CASE("export burns text in, and copies when there's none")
+{
+    Fixture f;
+    Session session(f.original, f.workRoot, f.processor);
+    CHECK(!session.exportBurnsInText());
+    CHECK_EQ(session.exportExtension(), std::string(".mp4"));
+
+    const auto track = session.addTextTrack("Titles");
+    TextClip c;
+    c.text = "Title";
+    c.startSec = 0;
+    c.endSec = 1;
+    session.addTextClip(track, c);
+    CHECK(session.exportBurnsInText());
+    CHECK_EQ(session.exportExtension(), std::string(".mkv"));
+
+    const fs::path out = f.temp.path() / "titled.mkv";
+    std::vector<double> progress;
+    session.exportCurrent(out, [&](double p) { progress.push_back(p); });
+    CHECK_CONTAINS(readAll(out), "drawtext=");
+    CHECK(!progress.empty() && progress.back() == 1.0);
+    CHECK(!anyPartialFiles(session.workDirectory()));
+    CHECK_EQ(readAll(f.original), f.originalBytes);
+    CHECK_THROWS_AS(session.exportCurrent(f.original), std::invalid_argument);
+
+    // A failed render leaves nothing behind.
+    f.processor.failNext = FakeProcessor::Failure::Error;
+    const fs::path failed = f.temp.path() / "failed.mkv";
+    CHECK_THROWS_AS(session.exportCurrent(failed), MediaError);
+    CHECK(!fs::exists(failed));
+    CHECK(!anyPartialFiles(session.workDirectory()));
 }
 
 TEST_CASE("isSameFile and pathToUtf8")

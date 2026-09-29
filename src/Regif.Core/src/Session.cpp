@@ -1,5 +1,6 @@
 #include <regif/Session.h>
 
+#include <algorithm>
 #include <format>
 #include <random>
 #include <stdexcept>
@@ -156,14 +157,118 @@ void Session::discardRedoStages()
     }
 }
 
-void Session::exportCurrent(const fs::path& destination) const
+TextLayer Session::textLayer() const
+{
+    TextLayer layer = m_text;
+    for (std::size_t i = 1; i <= m_current; ++i)
+        layer = mapLayerForward(layer, *m_stages[i].operation, m_stages[i - 1].info, m_stages[i].info);
+    return layer;
+}
+
+TextClip Session::toOriginal(TextClip clip) const
+{
+    for (std::size_t i = m_current; i > 0; --i)
+        clip = mapClipBackward(clip, *m_stages[i].operation, m_stages[i - 1].info, m_stages[i].info);
+    return clip;
+}
+
+TextTrack& Session::findTrack(std::uint64_t trackId)
+{
+    const auto it = std::find_if(m_text.tracks.begin(), m_text.tracks.end(),
+                                 [&](const TextTrack& t) { return t.id == trackId; });
+    if (it == m_text.tracks.end()) throw std::invalid_argument("No such text track");
+    return *it;
+}
+
+std::uint64_t Session::addTextTrack(std::string name)
+{
+    TextTrack track;
+    track.id = m_nextTextId++;
+    track.name = std::move(name);
+    m_text.tracks.push_back(std::move(track));
+    return m_text.tracks.back().id;
+}
+
+void Session::removeTextTrack(std::uint64_t trackId)
+{
+    findTrack(trackId); // throws for unknown ids
+    std::erase_if(m_text.tracks, [&](const TextTrack& t) { return t.id == trackId; });
+}
+
+std::uint64_t Session::addTextClip(std::uint64_t trackId, TextClip clip)
+{
+    TextTrack& track = findTrack(trackId);
+    clip.id = m_nextTextId++;
+    track.clips.push_back(toOriginal(std::move(clip)));
+    return track.clips.back().id;
+}
+
+void Session::updateTextClip(const TextClip& clip)
+{
+    for (TextTrack& track : m_text.tracks) {
+        for (TextClip& existing : track.clips) {
+            if (existing.id == clip.id) {
+                existing = toOriginal(clip);
+                return;
+            }
+        }
+    }
+    throw std::invalid_argument("No such text clip");
+}
+
+void Session::removeTextClip(std::uint64_t clipId)
+{
+    for (TextTrack& track : m_text.tracks) {
+        if (std::erase_if(track.clips, [&](const TextClip& c) { return c.id == clipId; }) > 0) return;
+    }
+    throw std::invalid_argument("No such text clip");
+}
+
+bool Session::exportBurnsInText() const
+{
+    return !textLayer().empty();
+}
+
+std::string Session::exportExtension() const
+{
+    const TextLayer text = textLayer();
+    if (!text.empty()) return planBurnIn(text, current().info).fileExtension;
+    return pathToUtf8(current().file.extension());
+}
+
+void Session::exportCurrent(const fs::path& destination, const ProgressCallback& progress,
+                            const CancellationToken* cancel) const
 {
     if (destination.empty()) throw std::invalid_argument("Choose where to save the file.");
     if (isSameFile(destination, m_original))
         throw std::invalid_argument("regif never overwrites the original file. Choose a different name or folder.");
-    if (isSameFile(destination, current().file)) return; // nothing to do
 
-    fs::copy_file(current().file, destination, fs::copy_options::overwrite_existing);
+    const TextLayer text = textLayer();
+    if (text.empty()) {
+        if (!isSameFile(destination, current().file))
+            fs::copy_file(current().file, destination, fs::copy_options::overwrite_existing);
+        if (progress) progress(1.0);
+        return;
+    }
+    if (isSameFile(destination, current().file))
+        throw std::invalid_argument("Choose a different file to export to.");
+
+    // Render inside the session folder, then copy, so a failed or cancelled export never
+    // leaves a half-written file where the user asked for one.
+    const RenderPlan plan = planBurnIn(text, current().info);
+    const fs::path partial = m_workDir / ("export.partial" + plan.fileExtension);
+    CancellationToken neverCancelled;
+    const CancellationToken& token = cancel ? *cancel : neverCancelled;
+    try {
+        m_processor.render(current().file, current().info, plan, partial, progress, token);
+        if (token.isCancelled()) throw OperationCancelled();
+        fs::copy_file(partial, destination, fs::copy_options::overwrite_existing);
+    } catch (...) {
+        removeQuietly(partial);
+        throw;
+    }
+    removeQuietly(partial);
+    if (progress) progress(1.0);
 }
 
 void Session::cleanupStaleSessions(const fs::path& workRoot, std::chrono::hours maxAge)

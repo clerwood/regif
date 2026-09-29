@@ -11,7 +11,8 @@
         "avcodec",
         "avformat",
         "avfilter",
-        "swscale"
+        "swscale",
+        "drawtext"
       ]
     }
   ],

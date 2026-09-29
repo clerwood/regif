@@ -3,8 +3,10 @@
 #include "MediaInfo.h"
 #include "MediaProcessor.h"
 #include "Operations.h"
+#include "TextLayer.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstddef>
 #include <filesystem>
 #include <optional>
@@ -56,8 +58,26 @@ public:
                        const ProgressCallback& progress = {},
                        const CancellationToken* cancel = nullptr);
 
-    // Copies the current stage to `destination`. Throws if `destination` is the original.
-    void exportCurrent(const std::filesystem::path& destination) const;
+    // Text overlays (see TextLayer.h). Clips passed in and returned are in the current stage's
+    // coordinates and time; the session stores them relative to the original, so undo, redo and
+    // later edits never lose them. Throws std::invalid_argument for unknown ids.
+    TextLayer textLayer() const;
+    std::uint64_t addTextTrack(std::string name);
+    void removeTextTrack(std::uint64_t trackId);
+    std::uint64_t addTextClip(std::uint64_t trackId, TextClip clip); // assigns and returns clip.id
+    void updateTextClip(const TextClip& clip);                        // identified by clip.id
+    void removeTextClip(std::uint64_t clipId);
+
+    // Whether exporting the current stage draws text into it (otherwise export is a plain
+    // copy), and the extension the exported file gets, including the dot.
+    bool exportBurnsInText() const;
+    std::string exportExtension() const;
+
+    // Writes the current stage to `destination`: a copy, or a render with the text burned in.
+    // Throws if `destination` is the original, plus what apply() throws when rendering.
+    void exportCurrent(const std::filesystem::path& destination,
+                       const ProgressCallback& progress = {},
+                       const CancellationToken* cancel = nullptr) const;
 
     // Removes leftover session directories (e.g. after a crash) older than maxAge.
     static void cleanupStaleSessions(const std::filesystem::path& workRoot, std::chrono::hours maxAge);
@@ -66,6 +86,8 @@ public:
 
 private:
     void discardRedoStages();
+    TextClip toOriginal(TextClip clip) const;
+    TextTrack& findTrack(std::uint64_t trackId);
 
     std::filesystem::path m_original;
     std::filesystem::path m_workDir;
@@ -73,6 +95,8 @@ private:
     std::vector<Stage> m_stages;
     std::size_t m_current = 0;
     unsigned m_nextFileId = 1;
+    TextLayer m_text; // in the original's coordinates and time
+    std::uint64_t m_nextTextId = 1;
 };
 
 // True when both paths exist and refer to the same file (handles case, links, 8.3 names).

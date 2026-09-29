@@ -4,6 +4,7 @@
 #include "Operations.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -27,5 +28,9 @@ struct RenderPlan {
 
 // Precondition: validate(op, input) returned no error.
 RenderPlan planOperation(const Operation& op, const MediaInfo& input);
+
+// Re-encodes `input` as the same kind of stage through the filters in `body`, the way crop,
+// trim and cut do: FFV1 for videos, a palette-preserving GIF for GIFs.
+RenderPlan planReencode(const MediaInfo& input, std::string_view body);
 
 } // namespace regif

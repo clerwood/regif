@@ -81,6 +81,7 @@
     <ClCompile Include="OperationsTests.cpp" />
     <ClCompile Include="RenderPlanTests.cpp" />
     <ClCompile Include="SessionTests.cpp" />
+    <ClCompile Include="TextLayerTests.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Regif.Core\Regif.Core.vcxproj">
