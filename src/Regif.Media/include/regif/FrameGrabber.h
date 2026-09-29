@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -30,6 +31,12 @@ public:
     // The frame on screen at `seconds`, scaled to fit within maxDimension and with any
     // container rotation applied. Throws MediaError.
     VideoFrameBgra grab(double seconds, int maxDimension = 1280);
+
+    // Frames at each of `seconds` (ascending), for timeline thumbnails. Each frame is passed to
+    // `onFrame` with its index as soon as it's decoded; return false from it to stop early.
+    // GIFs are decoded in a single pass. Frames that can't be decoded are skipped.
+    using FrameCallback = std::function<bool(std::size_t index, VideoFrameBgra&& frame)>;
+    void grabSequence(const std::vector<double>& seconds, int maxDimension, const FrameCallback& onFrame);
 
 private:
     struct Impl;

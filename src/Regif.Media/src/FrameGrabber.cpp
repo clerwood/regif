@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <utility>
 
 namespace regif {
@@ -18,17 +19,25 @@ struct FrameGrabber::Impl {
     PacketPtr packet = makePacket();
     FramePtr frame = makeFrame();
     FramePtr best = makeFrame();
+    bool pending = false; // `frame` holds a decoded frame that decodeUntil read past its target
     SwsPtr sws;
     int swsSrcW = 0, swsSrcH = 0, swsSrcFormat = -1, swsDstW = 0, swsDstH = 0;
 
     // Decodes forward from the current position until the frame on screen at `target` is in `best`.
-    bool decodeUntil(std::int64_t target)
+    // With `continuing`, carries on from the previous call (same position, ascending targets).
+    bool decodeUntil(std::int64_t target, bool continuing = false)
     {
         AVCodecContext* dec = input.decoder.get();
-        bool haveBest = false;
+        bool haveBest = continuing && best->buf[0] != nullptr;
         bool flushed = false;
+        if (!continuing) {
+            pending = false;
+            av_frame_unref(best.get());
+        }
         while (true) {
-            int received = avcodec_receive_frame(dec, frame.get());
+            int received = 0;
+            if (pending) pending = false;
+            else received = avcodec_receive_frame(dec, frame.get());
             if (received == AVERROR(EAGAIN) && !flushed) {
                 const int read = av_read_frame(input.format.get(), packet.get());
                 if (read < 0) {
@@ -44,7 +53,10 @@ struct FrameGrabber::Impl {
             if (received < 0) return haveBest; // EOF or error: show the last good frame
 
             const std::int64_t pts = framePts(frame.get());
-            if (haveBest && pts != AV_NOPTS_VALUE && pts > target) return true;
+            if (haveBest && pts != AV_NOPTS_VALUE && pts > target) {
+                pending = true; // keep it for the next target
+                return true;
+            }
             av_frame_unref(best.get());
             av_frame_move_ref(best.get(), frame.get());
             haveBest = true;
@@ -122,6 +134,35 @@ struct FrameGrabber::Impl {
         }
     }
 };
+
+void FrameGrabber::grabSequence(const std::vector<double>& seconds, int maxDimension, const FrameCallback& onFrame)
+{
+    Impl& impl = *m_impl;
+    if (!impl.isGif) {
+        // Seeking per frame is cheap for keyframe-rich stages and bounded by a GOP otherwise.
+        for (std::size_t i = 0; i < seconds.size(); ++i) {
+            std::optional<VideoFrameBgra> frame;
+            try {
+                frame = grab(seconds[i], maxDimension);
+            } catch (const MediaError&) {
+                continue;
+            }
+            if (!onFrame(i, std::move(*frame))) return;
+        }
+        return;
+    }
+
+    impl.input = openVideoInput(impl.file, true);
+    AVStream* stream = impl.input.stream;
+    const std::int64_t start = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
+    for (std::size_t i = 0; i < seconds.size(); ++i) {
+        const std::int64_t target =
+            start + av_rescale_q(std::llround(std::max(0.0, seconds[i]) * AV_TIME_BASE), AV_TIME_BASE_Q,
+                                 stream->time_base);
+        if (!impl.decodeUntil(target, i > 0)) return; // past the end
+        if (!onFrame(i, impl.convert(maxDimension))) return;
+    }
+}
 
 FrameGrabber::FrameGrabber(const std::filesystem::path& file)
     : m_impl(std::make_unique<Impl>())

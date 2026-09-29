@@ -225,6 +225,30 @@ TEST_CASE("frame grabber returns upright BGRA frames")
     CHECK_NEAR(g.timeSec, 1.0, 0.1);
 }
 
+TEST_CASE("frame grabber sequences match single grabs")
+{
+    // Two targets inside one GIF frame (15 fps) check that the one-pass decode doesn't skip ahead.
+    const std::vector<double> times{ 0.1, 0.12, 0.5, 1.0, 1.9 };
+    for (const char* name : { "clip.gif", "clip.mp4" }) {
+        FrameGrabber sequence(g_assets / name);
+        FrameGrabber single(g_assets / name);
+        std::vector<std::size_t> seen;
+        sequence.grabSequence(times, 60, [&](std::size_t index, VideoFrameBgra&& frame) {
+            seen.push_back(index);
+            const VideoFrameBgra expected = single.grab(times[index], 60);
+            CHECK_NEAR(frame.timeSec, expected.timeSec, 1e-6);
+            CHECK_EQ(frame.width, expected.width);
+            CHECK(frame.pixels == expected.pixels);
+            return true;
+        });
+        CHECK_EQ(seen.size(), times.size());
+
+        std::size_t calls = 0;
+        sequence.grabSequence(times, 60, [&](std::size_t, VideoFrameBgra&&) { return ++calls < 2; });
+        CHECK_EQ(calls, std::size_t(2)); // stops when the callback returns false
+    }
+}
+
 int main(int argc, char** argv)
 {
     g_assets = argc > 1 ? fs::path(argv[1]) : fs::absolute(fs::path(argv[0])).parent_path() / "assets";

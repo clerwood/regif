@@ -71,6 +71,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="include\regif\EditorGeometry.h" />
     <ClInclude Include="include\regif\MediaInfo.h" />
     <ClInclude Include="include\regif\MediaProcessor.h" />
     <ClInclude Include="include\regif\Operations.h" />
@@ -78,6 +79,7 @@
     <ClInclude Include="include\regif\Session.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\EditorGeometry.cpp" />
     <ClCompile Include="src\MediaInfo.cpp" />
     <ClCompile Include="src\Operations.cpp" />
     <ClCompile Include="src\RenderPlan.cpp" />
