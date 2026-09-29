@@ -1,0 +1,45 @@
+name: Release
+
+# Push a tag like v0.1.0 to build the app, the portable zip and the installer, and publish
+# them as a GitHub release.
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    uses: ./.github/workflows/build.yml
+    with:
+      configuration: Release
+      platform: x64
+      version: ${{ needs.version.outputs.version }}
+      package: true
+
+  publish:
+    needs: [ version, windows ]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: regif-${{ needs.version.outputs.version }}-x64-packages
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: regif ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/*.zip
+            dist/*.exe

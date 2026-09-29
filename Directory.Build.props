@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shared settings for every project in the solution. Imported before each project's own settings. -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <RegifRoot>$(MSBuildThisFileDirectory)</RegifRoot>
+
+    <!-- Build output outside the source tree: build\bin\<platform>\<config>\<project>\ -->
+    <OutDir>$(RegifRoot)build\bin\$(Platform)\$(Configuration)\$(MSBuildProjectName)\</OutDir>
+    <IntDir>$(RegifRoot)build\obj\$(Platform)\$(Configuration)\$(MSBuildProjectName)\</IntDir>
+
+    <!-- Visual Studio 2026 (18.x) ships the v145 toolset; Visual Studio 2022 (17.x) ships v143. -->
+    <RegifPlatformToolset Condition="'$(VisualStudioVersion)' &gt;= '18.0'">v145</RegifPlatformToolset>
+    <RegifPlatformToolset Condition="'$(RegifPlatformToolset)' == ''">v143</RegifPlatformToolset>
+  </PropertyGroup>
+
+  <!-- vcpkg in manifest mode. Point VCPKG_ROOT at a vcpkg clone, or use the copy bundled with Visual Studio. -->
+  <PropertyGroup>
+    <RegifVcpkgRoot Condition="'$(VCPKG_ROOT)' != ''">$([MSBuild]::EnsureTrailingSlash('$(VCPKG_ROOT)'))</RegifVcpkgRoot>
+    <RegifVcpkgRoot Condition="'$(RegifVcpkgRoot)' == '' and Exists('$(MSBuildExtensionsPath)\..\VC\vcpkg\scripts\buildsystems\msbuild\vcpkg.props')">$(MSBuildExtensionsPath)\..\VC\vcpkg\</RegifVcpkgRoot>
+    <RegifVcpkgProps>$(RegifVcpkgRoot)scripts\buildsystems\msbuild\vcpkg.props</RegifVcpkgProps>
+    <RegifVcpkgTargets>$(RegifVcpkgRoot)scripts\buildsystems\msbuild\vcpkg.targets</RegifVcpkgTargets>
+
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+    <VcpkgTriplet Condition="'$(Platform)' == 'x64'">x64-windows</VcpkgTriplet>
+    <VcpkgTriplet Condition="'$(Platform)' == 'ARM64'">arm64-windows</VcpkgTriplet>
+  </PropertyGroup>
+  <Import Project="$(RegifVcpkgProps)" Condition="'$(VcpkgEnabled)' != 'false' and Exists('$(RegifVcpkgProps)')" />
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>%(AdditionalOptions) /utf-8 /Zc:__cplusplus</AdditionalOptions>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>

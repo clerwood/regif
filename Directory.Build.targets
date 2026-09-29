@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(RegifVcpkgTargets)" Condition="'$(VcpkgEnabled)' != 'false' and Exists('$(RegifVcpkgTargets)')" />
+
+  <Target Name="RegifCheckVcpkg" BeforeTargets="PrepareForBuild" Condition="'$(VcpkgEnabled)' != 'false' and !Exists('$(RegifVcpkgProps)')">
+    <Error Text="regif needs vcpkg to build FFmpeg. Clone https://github.com/microsoft/vcpkg, run bootstrap-vcpkg.bat, and set the VCPKG_ROOT environment variable to that folder (see README.md)." />
+  </Target>
+</Project>

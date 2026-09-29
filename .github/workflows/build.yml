@@ -1,0 +1,124 @@
+# Reusable Windows build: vcpkg (FFmpeg) + NuGet (Windows App SDK) + MSBuild, then tests.
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      configuration:
+        type: string
+        default: Release
+      platform:
+        type: string
+        default: x64
+      version:
+        description: Version stamped into the installer and zip names
+        type: string
+        default: 0.0.0-dev
+      package:
+        description: Also produce the portable zip and the installer
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
+      OUT_DIR: build\bin\${{ inputs.platform }}\${{ inputs.configuration }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up vcpkg
+        id: vcpkg
+        shell: pwsh
+        run: |
+          # Prefer the runner's preinstalled vcpkg (a full clone, so builtin-baseline commits
+          # resolve), updated to the latest ports; fall back to a fresh clone.
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          if ($root -and (Test-Path "$root\.git")) {
+            git -C $root fetch --quiet origin master
+            git -C $root checkout --quiet --force FETCH_HEAD
+          } else {
+            $root = Join-Path $env:GITHUB_WORKSPACE 'vcpkg'
+            git clone --quiet https://github.com/microsoft/vcpkg $root
+          }
+          & "$root\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          "VCPKG_ROOT=$root" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "commit=$(git -C $root rev-parse --short HEAD)" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+
+      # FFmpeg takes 15-30 minutes to build from source; the binary cache makes later runs quick.
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-${{ inputs.platform }}-${{ steps.vcpkg.outputs.commit }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ inputs.platform }}-
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Restore NuGet packages
+        run: msbuild regif.sln -t:Restore -p:Configuration=${{ inputs.configuration }} -p:Platform=${{ inputs.platform }} -nologo -v:minimal
+
+      - name: Build
+        run: msbuild regif.sln -p:Configuration=${{ inputs.configuration }} -p:Platform=${{ inputs.platform }} -m -nologo -v:minimal
+
+      - name: Core tests
+        run: .\${{ env.OUT_DIR }}\Regif.Core.Tests\Regif.Core.Tests.exe
+
+      - name: FFmpeg smoke tests
+        run: .\${{ env.OUT_DIR }}\Regif.Media.Tests\Regif.Media.Tests.exe
+
+      - name: Stage app files
+        shell: pwsh
+        run: |
+          $src = "$env:OUT_DIR\Regif"
+          $dst = "dist\regif"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          # Everything Regif.exe needs at runtime, without linker/debugger by-products.
+          robocopy $src $dst /E /NFL /NDL /NJH /NJS /XF *.pdb *.lib *.exp *.ilk *.iobj *.ipdb *.appxrecipe
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md $dst
+          Get-ChildItem $dst | Select-Object Name, Length | Format-Table -AutoSize
+          exit 0
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: regif-${{ inputs.version }}-${{ inputs.platform }}
+          path: dist\regif
+          if-no-files-found: error
+
+      - name: Package zip and installer
+        if: ${{ inputs.package }}
+        shell: pwsh
+        run: |
+          $version = '${{ inputs.version }}'
+          $platform = '${{ inputs.platform }}'
+          Compress-Archive -Path dist\regif\* -DestinationPath "dist\regif-$version-$platform-portable.zip" -Force
+
+          function Find-Iscc {
+            Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $iscc = Find-Iscc
+          }
+          & $iscc "/DAppVersion=$version" "/DSourceDir=$PWD\dist\regif" "/DOutputDir=$PWD\dist" "/DPlatform=$platform" installer\regif.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist -File
+
+      - name: Upload packages
+        if: ${{ inputs.package }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: regif-${{ inputs.version }}-${{ inputs.platform }}-packages
+          path: |
+            dist\*.zip
+            dist\*.exe
+          if-no-files-found: error

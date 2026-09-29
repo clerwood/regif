@@ -1,0 +1,22 @@
+# Build output
+build/
+[Oo]bj/
+x64/
+ARM64/
+*.user
+*.aps
+.vs/
+packages/
+
+# C++/WinRT and XAML code generation
+Generated Files/
+
+# vcpkg manifest-mode install tree and binary cache
+vcpkg_installed/
+vcpkg-bincache/
+
+# Release staging
+dist/
+
+# Local Claude Code settings
+.claude/

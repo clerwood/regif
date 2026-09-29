@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast feedback: the core library is portable C++20 and builds anywhere.
+  core-portable:
+    name: Core tests (Linux, GCC)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and run core tests
+        run: |
+          g++ -std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror \
+            -Isrc/Regif.Core/include src/Regif.Core/src/*.cpp tests/Regif.Core.Tests/*.cpp -o core-tests
+          ./core-tests
+
+  windows:
+    name: Build and test (Windows x64)
+    uses: ./.github/workflows/build.yml
+    with:
+      configuration: Release
+      platform: x64
