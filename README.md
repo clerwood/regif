@@ -1,125 +1,45 @@
 # regif
 
-A Windows-native video-to-GIF converter and GIF editor, written in C++ with WinUI 3 and FFmpeg.
+Turn videos into GIFs, edit GIFs, and add titles and captions, on Windows.
 
-**Videos:** crop, trim, cut out a section, convert to GIF.
-**GIFs:** crop, trim, cut out a section, change speed, optimize (colors, dithering, frame rate, size).
-**Text:** titles and subtitles on tracks in the timeline, dragged into place on the preview, with any
-installed font, alignment, fill, stroke, background box, shadow and opacity.
+> **Pre-release.** regif is new and still rough in places. Please
+> [report anything odd](https://github.com/clerwood/regif/issues).
 
-## Staged, non-destructive editing
+## Features
 
-regif never writes to the file you open. Every change you apply is rendered into a new
-**stage**, and that stage becomes the starting point for the next change:
+- **Video to GIF**: pick the frame rate, size, number of colours and dithering, and whether it loops.
+- **Crop** by dragging a box on the picture, with an optional aspect ratio (1:1, 4:3, 16:9, 9:16…).
+- **Trim** with handles on the timeline, or **cut out** a section from the middle.
+- **Edit GIFs**: change their speed, and make them smaller by reducing colours, frames or size.
+- **Text**: add titles and subtitles on tracks in the timeline. Drag them into place on the
+  picture, double-click to type, and pick any installed font, size, alignment, fill, outline,
+  background box, shadow and opacity. The preview shows text exactly as it will be exported.
+- **Quick captions**: type a phrase and regif spreads the words evenly across the clip.
+- **Timeline** with thumbnails. Scrub, play from any point with Space, and snap text clips next
+  to each other.
+- **Your original file is never changed.** Every edit is kept as a step you can undo, redo or
+  jump back to, and nothing is saved until you export.
 
-```
-original.mp4 ─► stage 1: crop ─► stage 2: trim ─► stage 3: convert to GIF ─► Export…
- (read-only)
-```
+## Install
 
-Undo, redo or click any entry in the History list to go back to an earlier stage; applying a
-change from there replaces the stages after it. Only **Export** writes a file where you choose,
-and it refuses to overwrite the original.
+regif needs **Windows 10 (version 1809 or later) or Windows 11, 64-bit**.
 
-Text isn't a stage: it stays editable on top of whichever stage you're looking at, follows your
-crops, trims, cuts, speed changes and resizes, and is drawn in when you export. The preview shows
-text exactly as it will be exported, because FFmpeg draws both.
+1. Go to the [latest release](https://github.com/clerwood/regif/releases) and download one of:
+   - **`regif-…-x64-setup.exe`**, an installer. By default it installs just for you, without
+     needing administrator rights.
+   - **`regif-…-x64-portable.zip`**, if you'd rather not install anything. Unzip it anywhere and
+     run `Regif.exe`.
+2. Pre-releases aren't code-signed yet, so Windows may show **"Windows protected your PC"**.
+   Choose **More info**, then **Run anyway**.
 
-Stages live in `%LOCALAPPDATA%\regif\sessions\` and are deleted when you close the window
-(leftovers from a crash are cleaned up after 7 days). Video stages are stored losslessly
-(FFV1 in Matroska) so repeated edits don't lose quality; GIF stages are plain GIFs.
+To uninstall, find regif in **Settings > Apps**. To remove the portable version, delete its folder.
 
-## Building
+## Getting started
 
-### Requirements
-
-- Windows 10 1809 or later (Windows 11 recommended for the Mica backdrop).
-- Visual Studio 2026 (or 2022 17.12+) with the **Desktop development with C++** workload and the
-  **WinUI application development** workload (C++ WinUI app tools).
-- [vcpkg](https://github.com/microsoft/vcpkg) for FFmpeg.
-
-### One-time setup
-
-```bat
-git clone https://github.com/microsoft/vcpkg D:\dev\vcpkg
-D:\dev\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-setx VCPKG_ROOT D:\dev\vcpkg
-```
-
-Restart Visual Studio after `setx` so it sees the variable. (If `VCPKG_ROOT` isn't set, the
-copy of vcpkg bundled with Visual Studio is used when present.)
-
-Recommended: pin the FFmpeg version so every build uses the same one, then commit `vcpkg.json`:
-
-```bat
-cd D:\regif
-%VCPKG_ROOT%\vcpkg x-update-baseline --add-initial-baseline
-```
-
-### Build and run
-
-Open `regif.sln`, pick **Release | x64** (or Debug), set **Regif** as the startup project, and
-press F5. The first build compiles FFmpeg through vcpkg, which takes 15–30 minutes; after that
-it's cached.
-
-From a Developer PowerShell:
-
-```powershell
-msbuild regif.sln -t:Restore -p:Configuration=Release -p:Platform=x64
-msbuild regif.sln -p:Configuration=Release -p:Platform=x64 -m
-.\build\bin\x64\Release\Regif.Core.Tests\Regif.Core.Tests.exe
-.\build\bin\x64\Release\Regif.Media.Tests\Regif.Media.Tests.exe
-.\build\bin\x64\Release\Regif\Regif.exe
-```
-
-The app is unpackaged and self-contained: the folder `build\bin\x64\Release\Regif` runs on
-any Windows 10/11 x64 PC without installing the Windows App SDK runtime.
-
-## Continuous integration and releases
-
-- **CI** (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request: the
-  core tests on Linux with GCC, and a full Windows build with both test suites. The built app
-  is attached to the run as an artifact.
-- **Release** (`.github/workflows/release.yml`) runs when you push a tag such as `v0.1.0`. It
-  builds a portable zip and an installer (`regif-0.1.0-x64-setup.exe`, made with Inno Setup)
-  and publishes both as a GitHub release. Tags with a hyphen (`v0.2.0-beta.1`) become
-  pre-releases.
-
-### Publishing to GitHub
-
-Create an empty repository named `regif` on GitHub (no README or license, since this project
-has them), then:
-
-```bat
-cd D:\regif
-git init
-git add .
-git commit -m "Initial commit"
-git branch -M main
-git remote add origin https://github.com/<your-user>/regif.git
-git push -u origin main
-```
-
-To publish a release:
-
-```bat
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-When bumping the version, update `vcpkg.json` and `src/Regif/Regif.rc` (the installer and zip
-take their version from the tag).
-
-## Project layout
-
-| Path | What it is |
-| --- | --- |
-| `src/Regif.Core` | Portable C++20: operations, validation, FFmpeg filter-graph planning, stage/session management. No FFmpeg or Windows dependencies. |
-| `src/Regif.Media` | FFmpeg backend: probing, rendering a plan, grabbing preview frames. |
-| `src/Regif` | The WinUI 3 app. |
-| `tests/` | `Regif.Core.Tests` (pure logic, runs anywhere) and `Regif.Media.Tests` (end-to-end FFmpeg checks on the clips in `tests/assets`). |
-| `installer/` | Inno Setup script. |
-| `docs/ARCHITECTURE.md` | How it fits together, and the roadmap. |
+1. **Open** a video or GIF (Ctrl+O), or drag it onto the window.
+2. Make your changes in the panel on the right. Each one you apply appears in **History**.
+3. For a video, choose **Convert to GIF** once the clip is the way you want it.
+4. **Export** (Ctrl+S) to save the result wherever you like.
 
 ## Keyboard shortcuts
 
@@ -127,32 +47,32 @@ take their version from the tag).
 | --- | --- |
 | Ctrl+O | Open |
 | Ctrl+S | Export |
-| Ctrl+Z / Ctrl+Y | Undo / redo a stage |
-| Space | Play or pause from the playhead (unless you're typing) |
-| ← / → | One frame back / forward (timeline focused) |
-| PageUp / PageDown, Home / End | One second back / forward, start / end (timeline focused) |
-| I / O | Set the trim start / end at the playhead (timeline focused) |
-| Double-click | Edit text in place (on the preview or its clip on a track) |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
+| Space | Play or pause from the playhead |
+| ← / → | One frame back / forward (after clicking the timeline) |
+| PageUp / PageDown | One second back / forward (after clicking the timeline) |
+| Home / End | Jump to the start / end (after clicking the timeline) |
+| I / O | Set the trim start / end at the playhead (after clicking the timeline) |
+| Double-click text | Edit it in place, on the picture or on its track |
 | Esc | Finish editing text |
-| Alt while dragging a clip | Don't snap to neighbouring clips |
+| Alt while dragging a text clip | Don't snap to its neighbours |
 
-## Current limitations
+## Good to know
 
-- No audio: GIFs have none, and video stages drop the audio track.
-- Exporting a video stage (for example a trimmed clip before converting) writes lossless FFV1
-  Matroska (`.mkv`). It plays in VLC and mpv but not in every player, and it's large. MP4
-  export is on the roadmap. Exporting the original (stage 1) writes an exact copy.
-- Preview playback decodes on the CPU and skips frames when it can't keep up (large 4K videos).
-- Cutting out a middle section is entered as numbers; the timeline handles only trim the ends.
-- AV1 videos need FFmpeg's `dav1d` feature, which isn't enabled in `vcpkg.json` yet.
-- Mirrored (flipped) phone videos are shown rotated but not un-mirrored.
+- There's **no sound**. GIFs don't have any, and regif doesn't keep the audio of videos yet.
+- Export saves videos (before converting to GIF) as `.mkv`. These play in VLC and most modern
+  players, but they're large, so converting to GIF is usually the last step.
+- Playback may skip frames on very large videos, such as 4K.
+- Text isn't part of undo and redo. Edit or delete it directly.
+- A few fonts aren't offered, and bold or italic only work when the font includes them.
+- AV1 videos can't be opened yet.
+- Everything happens on your PC. regif doesn't use the internet.
 
-- Text uses the font files installed on this PC. A few fonts (faces stored later in a `.ttc`
-  collection) aren't offered, and bold or italic is only available when the font has that face.
-- Exporting text re-encodes: GIFs get a new palette (existing colours are kept where possible), and
-  video stages export as FFV1 Matroska even from the original.
-- Text isn't part of undo/redo; delete or edit it directly.
+## Building from source
+
+See [docs/BUILDING.md](docs/BUILDING.md).
 
 ## License
 
-MIT (see `LICENSE`). Release builds include FFmpeg under the LGPL; see `THIRD_PARTY_NOTICES.md`.
+regif is released under the MIT license (see [LICENSE](LICENSE)). It includes FFmpeg and other
+open-source libraries under their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
