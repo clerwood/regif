@@ -78,6 +78,8 @@ struct MainWindow : MainWindowT<MainWindow> {
                                   Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
     void OnPreviewPointerCaptureLost(winrt::Windows::Foundation::IInspectable const& sender,
                                      Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args);
+    void OnPreviewDoubleTapped(winrt::Windows::Foundation::IInspectable const& sender,
+                               Microsoft::UI::Xaml::Input::DoubleTappedRoutedEventArgs const& args);
 
     // Timeline
     void OnTimelineSizeChanged(winrt::Windows::Foundation::IInspectable const& sender,
@@ -145,6 +147,9 @@ private:
     winrt::fire_and_forget RenderTextVisual(std::uint64_t clipId);
     void LayoutTextOverlay();
     void LayoutLanes();
+    void BeginInlineEdit(std::uint64_t clipId); // a caret in the text, on the preview
+    void EndInlineEdit();
+    void LayoutInlineEditor();
     std::optional<::regif::TextClip> TextClipAt(double x, double y); // preview surface point, topmost first
     int LaneAt(double y);
     double TimelineHeight();
@@ -212,6 +217,8 @@ private:
     bool m_updatingText = false; // filling the text panel from a clip
     bool m_playing = false;      // the GIF animation is showing, so text for one time would be wrong
     Microsoft::UI::Xaml::Shapes::Rectangle m_textSelection{ nullptr };
+    Microsoft::UI::Xaml::Controls::TextBox m_inlineEditor{ nullptr }; // made per edit, so its colours apply
+    std::uint64_t m_inlineClip = 0;
 };
 
 } // namespace winrt::Regif::implementation

@@ -8,6 +8,9 @@
 #include "FontCatalog.h"
 #include "UiHelpers.h"
 
+#include <winrt/Microsoft.UI.Text.h>
+#include <winrt/Windows.UI.Text.h>
+
 #include <array>
 #include <cstring>
 #include <format>
@@ -124,6 +127,7 @@ std::optional<::regif::TextClip> MainWindow::SelectedClip()
 
 void MainWindow::SelectClip(std::uint64_t clipId)
 {
+    if (m_inlineClip != 0 && clipId != m_inlineClip) EndInlineEdit();
     m_selectedClip = clipId;
     if (clipId != 0 && m_session) {
         for (const auto& track : m_session->textLayer().tracks)
@@ -495,13 +499,20 @@ void MainWindow::LayoutTextOverlay()
     auto children = TextCanvas().Children();
     children.Clear();
     const PreviewLayout layout = CropLayout();
+    if (m_inlineClip != 0) {
+        const auto clip = SelectedClip();
+        if (!layout || m_playing || !clip || clip->id != m_inlineClip || !::regif::isVisibleAt(*clip, m_playheadSec)) {
+            EndInlineEdit(); // lays the overlay out again
+            return;
+        }
+    }
     if (!m_session || !layout || m_playing) return;
 
     const double s = layout.scale;
     bool selectionShown = false;
     for (const auto& track : m_session->textLayer().tracks) {
         for (const auto& clip : track.clips) {
-            if (!::regif::isVisibleAt(clip, m_playheadSec)) continue;
+            if (!::regif::isVisibleAt(clip, m_playheadSec) || clip.id == m_inlineClip) continue; // the editor shows it
             auto it = m_textVisuals.find(clip.id);
             if (it == m_textVisuals.end() || it->second.rendered.image.width <= 0) continue;
             TextVisual& visual = it->second;
@@ -524,6 +535,105 @@ void MainWindow::LayoutTextOverlay()
         }
     }
     if (selectionShown) children.Append(m_textSelection); // on top of every text
+}
+
+// ---------------------------------------------------------------------------------------
+// Editing text in place
+
+void MainWindow::BeginInlineEdit(std::uint64_t clipId)
+{
+    EndInlineEdit();
+    if (!m_session || m_busy) return;
+    SelectClip(clipId);
+    const auto clip = SelectedClip();
+    if (!clip) return;
+    if (!::regif::isVisibleAt(*clip, m_playheadSec)) SetPlayhead(clip->startSec);
+    if (!CropLayout()) return;
+
+    // A fresh TextBox each time: its template picks up the colour resources when it loads.
+    const auto& s = clip->style;
+    TextBox box;
+    winrt::Windows::UI::Color ink = ToColor(s.fill);
+    ink.A = 255; // readable while editing, whatever the opacity
+    const media::SolidColorBrush foreground(ink);
+    const media::SolidColorBrush clear(winrt::Windows::UI::Color{ 0, 0, 0, 0 });
+    const media::SolidColorBrush focused(winrt::Windows::UI::Color{ 0x40, 0, 0, 0 });
+    auto resources = box.Resources();
+    for (const wchar_t* key : { L"TextControlForeground", L"TextControlForegroundPointerOver", L"TextControlForegroundFocused" })
+        resources.Insert(winrt::box_value(key), foreground);
+    for (const wchar_t* key : { L"TextControlBackground", L"TextControlBackgroundPointerOver", L"TextControlBorderBrush",
+                                L"TextControlBorderBrushPointerOver", L"TextControlBorderBrushFocused" })
+        resources.Insert(winrt::box_value(key), clear);
+    resources.Insert(winrt::box_value(L"TextControlBackgroundFocused"), focused);
+
+    box.Foreground(foreground);
+    box.Background(clear);
+    box.AcceptsReturn(true);
+    box.TextWrapping(TextWrapping::NoWrap);
+    box.IsSpellCheckEnabled(false);
+    box.Padding({ 0, 0, 0, 0 });
+    box.BorderThickness({ 0, 0, 0, 0 });
+    box.MinWidth(8);
+    box.MinHeight(0);
+    box.FontFamily(media::FontFamily(winrt::to_hstring(s.fontFamily)));
+    box.FontWeight(s.bold ? winrt::Microsoft::UI::Text::FontWeights::Bold() : winrt::Microsoft::UI::Text::FontWeights::Normal());
+    box.FontStyle(s.italic ? winrt::Windows::UI::Text::FontStyle::Italic : winrt::Windows::UI::Text::FontStyle::Normal);
+    box.TextAlignment(s.align == ::regif::TextAlign::Left    ? TextAlignment::Left
+                      : s.align == ::regif::TextAlign::Right ? TextAlignment::Right
+                                                             : TextAlignment::Center);
+    box.Text(ToTextBox(clip->text));
+
+    box.TextChanged([this](IInspectable const&, TextChangedEventArgs const&) {
+        if (!m_inlineEditor) return;
+        const std::string text = FromTextBox(m_inlineEditor.Text());
+        EditSelectedClip([&](::regif::TextClip& c) { c.text = text; });
+        m_updatingText = true; // mirror it in the side panel
+        if (FromTextBox(TextContent().Text()) != text) TextContent().Text(ToTextBox(text));
+        m_updatingText = false;
+    });
+    box.KeyDown([this](IInspectable const&, Input::KeyRoutedEventArgs const& args) {
+        if (args.Key() == winrt::Windows::System::VirtualKey::Escape) {
+            args.Handled(true);
+            EndInlineEdit();
+        }
+    });
+    box.LostFocus([this](IInspectable const&, RoutedEventArgs const&) { EndInlineEdit(); });
+    box.SizeChanged([this](IInspectable const&, SizeChangedEventArgs const&) { LayoutInlineEditor(); });
+
+    m_inlineEditor = box;
+    m_inlineClip = clipId;
+    TextEditCanvas().Children().Append(box);
+    LayoutTextOverlay(); // hides the rendered copy
+    LayoutInlineEditor();
+    box.Focus(FocusState::Programmatic);
+    box.SelectAll();
+}
+
+void MainWindow::EndInlineEdit()
+{
+    if (!m_inlineEditor) return;
+    m_inlineEditor = nullptr; // first: removing a focused box raises LostFocus, which calls back here
+    m_inlineClip = 0;
+    TextEditCanvas().Children().Clear();
+    LayoutTextOverlay();
+}
+
+// Puts the editor where the text is: the anchor, adjusted for the alignment and the editor's width.
+void MainWindow::LayoutInlineEditor()
+{
+    if (!m_inlineEditor) return;
+    const PreviewLayout layout = CropLayout();
+    const auto clip = SelectedClip();
+    if (!layout || !clip) return;
+    const double s = layout.scale;
+    m_inlineEditor.FontSize(std::max(1.0, clip->style.fontSize * s));
+    const double width = m_inlineEditor.ActualWidth();
+    const double anchorX = layout.left + clip->x * s;
+    const double left = clip->style.align == ::regif::TextAlign::Left    ? anchorX
+                        : clip->style.align == ::regif::TextAlign::Right ? anchorX - width
+                                                                         : anchorX - width / 2;
+    Canvas::SetLeft(m_inlineEditor, left);
+    Canvas::SetTop(m_inlineEditor, layout.top + clip->y * s);
 }
 
 std::optional<::regif::TextClip> MainWindow::TextClipAt(double x, double y)

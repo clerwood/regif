@@ -71,10 +71,13 @@
                         PointerPressed="OnPreviewPointerPressed"
                         PointerMoved="OnPreviewPointerMoved"
                         PointerReleased="OnPreviewPointerReleased"
-                        PointerCaptureLost="OnPreviewPointerCaptureLost">
+                        PointerCaptureLost="OnPreviewPointerCaptureLost"
+                        DoubleTapped="OnPreviewDoubleTapped">
                         <Grid Background="Transparent">
                             <Canvas x:Name="TextCanvas" IsHitTestVisible="False" />
                             <Canvas x:Name="CropCanvas" IsHitTestVisible="False" />
+                            <!-- Holds the in-place text editor while one is open. -->
+                            <Canvas x:Name="TextEditCanvas" />
                         </Grid>
                     </local:InteractiveSurface>
                     <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12" MaxWidth="360">

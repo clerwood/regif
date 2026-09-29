@@ -471,6 +471,7 @@ winrt::fire_and_forget MainWindow::ShowCurrentStage()
     auto lifetime = get_strong();
     auto queue = DispatcherQueue();
     const unsigned generation = ++m_previewGeneration;
+    EndInlineEdit();
     m_grabber.reset();
     m_gifBitmap = nullptr;
     PreviewImage().Source(nullptr);
@@ -740,12 +741,14 @@ void MainWindow::OnPreviewSurfaceSizeChanged(IInspectable const&, SizeChangedEve
 {
     LayoutCropOverlay();
     LayoutTextOverlay();
+    LayoutInlineEditor();
 }
 
 // One surface serves the crop rectangle and the text. Crop edges and corners win, then text
 // (so it can be dragged inside the crop rectangle), then moving the crop rectangle.
 void MainWindow::OnPreviewPointerPressed(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
 {
+    EndInlineEdit(); // clicking elsewhere on the preview finishes editing (the editor handles its own clicks)
     const PreviewLayout layout = CropLayout();
     if (m_busy || !layout) return;
     const auto p = args.GetCurrentPoint(PreviewSurface()).Position();
@@ -812,6 +815,16 @@ void MainWindow::OnPreviewPointerReleased(IInspectable const&, xinput::PointerRo
     m_textDragging = false;
     PreviewSurface().ReleasePointerCapture(args.Pointer());
     args.Handled(true);
+}
+
+void MainWindow::OnPreviewDoubleTapped(IInspectable const&, xinput::DoubleTappedRoutedEventArgs const& args)
+{
+    if (m_busy) return;
+    const auto p = args.GetPosition(PreviewSurface());
+    if (const auto clip = TextClipAt(p.X, p.Y)) {
+        BeginInlineEdit(clip->id);
+        args.Handled(true);
+    }
 }
 
 void MainWindow::OnPreviewPointerCaptureLost(IInspectable const&, xinput::PointerRoutedEventArgs const&)
@@ -1123,10 +1136,8 @@ void MainWindow::OnTimelineDoubleTapped(IInspectable const&, xinput::DoubleTappe
     const ::regif::TextTrack& track = layer.tracks[static_cast<std::size_t>(lane)];
     const double t = TimelineSeconds(point.X);
     for (const auto& clip : track.clips) {
-        if (::regif::isVisibleAt(clip, t)) { // on a clip: edit its text
-            SelectClip(clip.id);
-            TextContent().Focus(FocusState::Programmatic);
-            TextContent().SelectAll();
+        if (::regif::isVisibleAt(clip, t)) { // on a clip: edit its text on the preview
+            BeginInlineEdit(clip.id);
             args.Handled(true);
             return;
         }
