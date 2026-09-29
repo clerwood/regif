@@ -55,6 +55,7 @@ struct MainWindow : MainWindowT<MainWindow> {
     void OnAddTrackClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
     winrt::fire_and_forget OnRemoveTrackClick(winrt::Windows::Foundation::IInspectable sender, Microsoft::UI::Xaml::RoutedEventArgs args);
     void OnAddTextClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
+    void OnAddCaptionsClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
     void OnDeleteTextClick(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::RoutedEventArgs const& args);
     void OnTextContentChanged(winrt::Windows::Foundation::IInspectable const& sender,
                               Microsoft::UI::Xaml::Controls::TextChangedEventArgs const& args);
@@ -162,6 +163,7 @@ private:
     void LayoutInlineEditor();
     std::optional<::regif::TextClip> TextClipAt(double x, double y); // preview surface point, topmost first
     int LaneAt(double y);
+    std::vector<double> SnapTargets(std::uint64_t clipId); // other clips' edges on its track, and the ends
     double TimelineHeight();
 
     // Timeline
@@ -220,6 +222,7 @@ private:
     std::shared_ptr<std::atomic_bool> m_thumbnailCancel;
     Microsoft::UI::Dispatching::DispatcherQueueTimer m_thumbnailTimer{ nullptr }; // debounces resizes
     ::regif::TextClip m_clipDragStart; // the dragged clip as it was when the drag began
+    std::optional<double> m_snapTime;  // where a clip drag has snapped, shown as a line
 
     // Text
     std::map<std::uint64_t, TextVisual> m_textVisuals;

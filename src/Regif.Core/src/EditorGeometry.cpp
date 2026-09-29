@@ -129,6 +129,18 @@ CropOp toCropOp(const CropRect& crop, int frameWidth, int frameHeight)
     return { x0, y0, x1 - x0, y1 - y0 };
 }
 
+std::optional<Snap> snapRange(double start, double end, const std::vector<double>& targets, double tolerance)
+{
+    std::optional<Snap> best;
+    for (const double target : targets) {
+        for (const double edge : { start, end }) {
+            const double shift = target - edge;
+            if (std::abs(shift) <= tolerance && (!best || std::abs(shift) < std::abs(best->shift))) best = Snap{ shift, target };
+        }
+    }
+    return best;
+}
+
 std::vector<double> thumbnailTimes(double durationSec, int count)
 {
     std::vector<double> times;

@@ -204,6 +204,25 @@
                             </Grid>
                             <Button Content="Add text at playhead" Style="{StaticResource AccentButtonStyle}" Click="OnAddTextClick" />
 
+                            <!-- Quick captions: a phrase spread across a new track, a few words at a time. -->
+                            <StackPanel Spacing="8" Padding="12" CornerRadius="4" Background="{ThemeResource ControlAltFillColorSecondaryBrush}">
+                                <TextBlock Text="Quick captions" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                <TextBox x:Name="CaptionPhrase" PlaceholderText="Type a phrase to spread across a new track" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="48" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <NumberBox x:Name="CaptionWords" Header="Words each" Minimum="1" Maximum="50" Value="1" SpinButtonPlacementMode="Compact" />
+                                    <ComboBox x:Name="CaptionSpan" Grid.Column="1" Header="Across" HorizontalAlignment="Stretch" SelectedIndex="0">
+                                        <x:String>Whole clip</x:String>
+                                        <x:String>Trim handles</x:String>
+                                        <x:String>Playhead to end</x:String>
+                                    </ComboBox>
+                                </Grid>
+                                <Button Content="Add captions" Click="OnAddCaptionsClick" />
+                            </StackPanel>
+
                             <StackPanel x:Name="TextClipPanel" Spacing="12" Visibility="Collapsed">
                                 <TextBox x:Name="TextContent" Header="Text" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="64" TextChanged="OnTextContentChanged" />
                                 <Grid ColumnSpacing="8">

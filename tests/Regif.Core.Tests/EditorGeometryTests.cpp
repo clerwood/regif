@@ -113,3 +113,19 @@ TEST_CASE("thumbnail times sit in the middle of equal slots")
     CHECK(thumbnailTimes(0.0, 4).empty());
     CHECK(thumbnailTimes(10.0, 0).empty());
 }
+
+TEST_CASE("timeline drags snap the nearer edge to a target")
+{
+    const std::vector<double> targets{ 0.0, 2.0, 5.0, 10.0 };
+    // Moving [2.9, 4.9]: the end is 0.1 from 5.
+    const auto moved = snapRange(2.9, 4.9, targets, 0.2);
+    CHECK(moved && near(moved->shift, 0.1) && near(moved->target, 5.0));
+    // Both edges near targets: the closer one wins.
+    const auto closer = snapRange(2.05, 4.9, targets, 0.2);
+    CHECK(closer && near(closer->shift, -0.05) && near(closer->target, 2.0));
+    // Resizing one edge.
+    const auto edge = snapRange(9.85, 9.85, targets, 0.2);
+    CHECK(edge && near(edge->target, 10.0));
+    CHECK(!snapRange(3.0, 4.0, targets, 0.2));
+    CHECK(!snapRange(3.0, 4.0, {}, 0.2));
+}

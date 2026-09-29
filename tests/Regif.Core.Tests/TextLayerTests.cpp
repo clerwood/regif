@@ -188,3 +188,28 @@ TEST_CASE("burning in text re-encodes the stage with one drawtext per clip")
     blank.tracks.push_back({ 1, "Empty", {} });
     CHECK(blank.empty());
 }
+
+TEST_CASE("quick captions spread words evenly and back to back")
+{
+    TextClip style = clip(0, 1, 320, 600);
+    style.style.fontSize = 33;
+
+    const auto one = makeCaptions("  the quick\nbrown   fox ", 1, 2.0, 6.0, style);
+    CHECK_EQ(one.size(), std::size_t(4));
+    CHECK_EQ(one[0].text, std::string("the"));
+    CHECK_EQ(one[3].text, std::string("fox"));
+    CHECK(near(one[0].startSec, 2.0) && near(one[0].endSec, 3.0));
+    CHECK(near(one[3].startSec, 5.0) && near(one[3].endSec, 6.0));
+    for (std::size_t i = 1; i < one.size(); ++i) CHECK(one[i].startSec == one[i - 1].endSec); // no gaps
+    CHECK(near(one[2].x, 320) && near(one[2].style.fontSize, 33) && one[2].id == 0);
+
+    const auto pairs = makeCaptions("a b c d e", 2, 0.0, 3.0, style);
+    CHECK_EQ(pairs.size(), std::size_t(3));
+    CHECK_EQ(pairs[0].text, std::string("a b"));
+    CHECK_EQ(pairs[2].text, std::string("e"));
+    CHECK(near(pairs[1].startSec, 1.0) && near(pairs[2].endSec, 3.0));
+
+    CHECK(makeCaptions("   ", 1, 0.0, 3.0, style).empty());
+    CHECK(makeCaptions("words", 1, 3.0, 3.0, style).empty());
+    CHECK_EQ(makeCaptions("a b", 0, 0.0, 1.0, style).size(), std::size_t(2)); // at least one word each
+}

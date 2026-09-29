@@ -91,6 +91,12 @@ TextClip mapClipBackward(const TextClip& clip, const Operation& op, const MediaI
 TextLayer mapLayerForward(const TextLayer& layer, const Operation& op, const MediaInfo& before,
                           const MediaInfo& after);
 
+// Splits `phrase` at whitespace into captions of `wordsPerCaption` words and spreads them
+// evenly and back to back from startSec to endSec. Each is a copy of `style` with its text and
+// times replaced (ids are left for Session to assign). Empty when there are no words or no time.
+std::vector<TextClip> makeCaptions(std::string_view phrase, int wordsPerCaption, double startSec, double endSec,
+                                   const TextClip& style);
+
 // Escapes a filter option value for use inside a filter graph string (the option level and
 // the graph level, see "Notes on filtergraph escaping" in the FFmpeg docs).
 std::string escapeFilterValue(std::string_view value);

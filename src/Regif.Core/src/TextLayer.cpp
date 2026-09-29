@@ -165,6 +165,41 @@ TextLayer mapLayerForward(const TextLayer& layer, const Operation& op, const Med
     return out;
 }
 
+std::vector<TextClip> makeCaptions(std::string_view phrase, int wordsPerCaption, double startSec, double endSec,
+                                   const TextClip& style)
+{
+    std::vector<std::string> words;
+    std::string word;
+    for (const char c : phrase) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            if (!word.empty()) words.push_back(std::move(word));
+            word.clear();
+        } else {
+            word += c;
+        }
+    }
+    if (!word.empty()) words.push_back(std::move(word));
+
+    std::vector<TextClip> captions;
+    if (words.empty() || !(endSec > startSec)) return captions;
+    const std::size_t per = static_cast<std::size_t>(std::max(1, wordsPerCaption));
+    const std::size_t count = (words.size() + per - 1) / per;
+    const double slot = (endSec - startSec) / static_cast<double>(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        TextClip clip = style;
+        clip.id = 0;
+        clip.text.clear();
+        for (std::size_t w = i * per; w < std::min(words.size(), (i + 1) * per); ++w) {
+            if (!clip.text.empty()) clip.text += ' ';
+            clip.text += words[w];
+        }
+        clip.startSec = startSec + slot * static_cast<double>(i);
+        clip.endSec = i + 1 == count ? endSec : startSec + slot * static_cast<double>(i + 1); // no gap from rounding
+        captions.push_back(std::move(clip));
+    }
+    return captions;
+}
+
 std::string escapeFilterValue(std::string_view value)
 {
     // Backslash-escaping any character is harmless to av_get_token, so one set serves both

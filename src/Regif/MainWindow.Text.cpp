@@ -319,6 +319,60 @@ void MainWindow::OnAddTextClick(IInspectable const&, RoutedEventArgs const&)
     AddTextAt(m_selectedTrack, m_playheadSec);
 }
 
+void MainWindow::OnAddCaptionsClick(IInspectable const&, RoutedEventArgs const&)
+{
+    if (!m_session || m_busy) return;
+    const double duration = TimelineDuration();
+    double start = 0.0, end = duration;
+    switch (CaptionSpan().SelectedIndex()) {
+    case 1:
+        start = std::clamp(Value(TrimStart(), 0.0), 0.0, duration);
+        end = std::clamp(Value(TrimEnd(), duration), start, duration);
+        break;
+    case 2: start = m_playheadSec; break;
+    default: break;
+    }
+
+    const auto& info = m_session->current().info;
+    const auto selected = SelectedClip();
+    ::regif::TextClip style;
+    style.style = DefaultTextStyle();
+    style.x = selected ? selected->x : info.width / 2.0;
+    style.y = selected ? selected->y : std::round(info.height * 0.78);
+    if (!selected) style.style.align = ::regif::TextAlign::Center;
+
+    const auto captions =
+        ::regif::makeCaptions(FromTextBox(CaptionPhrase().Text()), IntValue(CaptionWords(), 1), start, end, style);
+    if (captions.empty()) {
+        ShowStatus(InfoBarSeverity::Warning, L"No captions added",
+                   end > start ? L"Type a phrase first." : L"There's no time in that range.");
+        return;
+    }
+    if (captions.front().endSec - captions.front().startSec < FrameStep()) {
+        ShowStatus(InfoBarSeverity::Warning, L"No captions added",
+                   L"That's more captions than there are frames. Use more words each, or a longer range.");
+        return;
+    }
+
+    const auto layer = m_session->textLayer();
+    const auto named = std::count_if(layer.tracks.begin(), layer.tracks.end(),
+                                     [](const ::regif::TextTrack& t) { return t.name.starts_with("Captions"); });
+    const std::uint64_t track = m_session->addTextTrack(named == 0 ? std::string("Captions") : std::format("Captions {}", named + 1));
+    std::uint64_t first = 0;
+    for (const auto& caption : captions) {
+        const std::uint64_t id = m_session->addTextClip(track, caption);
+        if (first == 0) first = id;
+    }
+    m_selectedTrack = track;
+    RefreshTextVisuals();
+    if (!::regif::isVisibleAt(captions.front(), m_playheadSec)) SetPlayhead(captions.front().startSec);
+    SelectClip(first);
+    LayoutTimeline(); // one more track
+    ShowStatus(InfoBarSeverity::Success, L"Captions added",
+               winrt::hstring(std::format(L"{} caption{} on a new track. Select one to restyle it; new text copies the selected style.",
+                                          captions.size(), captions.size() == 1 ? L"" : L"s")));
+}
+
 void MainWindow::OnDeleteTextClick(IInspectable const&, RoutedEventArgs const&)
 {
     if (!m_session || m_busy || m_selectedClip == 0) return;
@@ -666,6 +720,22 @@ double MainWindow::TimelineHeight()
     return tracks == 0 ? kTimelineHeight : kLaneTop + tracks * kLaneHeight;
 }
 
+std::vector<double> MainWindow::SnapTargets(std::uint64_t clipId)
+{
+    std::vector<double> targets{ 0.0, TimelineDuration() };
+    if (!m_session) return targets;
+    for (const auto& track : m_session->textLayer().tracks) {
+        const bool ownTrack = std::any_of(track.clips.begin(), track.clips.end(), [&](const auto& c) { return c.id == clipId; });
+        if (!ownTrack) continue;
+        for (const auto& clip : track.clips) {
+            if (clip.id == clipId) continue;
+            targets.push_back(clip.startSec);
+            targets.push_back(clip.endSec);
+        }
+    }
+    return targets;
+}
+
 int MainWindow::LaneAt(double y)
 {
     if (!m_session || y < kLaneTop) return -1;
@@ -728,6 +798,14 @@ void MainWindow::LayoutLanes()
             Place(block, xs, y, std::max(4.0, xe - xs), kLaneClipHeight);
             children.Append(block);
         }
+    }
+
+    if (m_snapTime) { // where the dragged clip snapped
+        shapes::Rectangle line;
+        line.Fill(text);
+        line.IsHitTestVisible(false);
+        Place(line, TimelineX(*m_snapTime) - 1, kLaneTop - 2, 2, layer.tracks.size() * kLaneHeight);
+        children.Append(line);
     }
 }
 

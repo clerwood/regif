@@ -1091,6 +1091,11 @@ void MainWindow::OnTimelinePointerMoved(IInspectable const&, xinput::PointerRout
     const double strip = TimelineSurface().ActualWidth() - 2 * kHandleWidth;
     const double shift = strip > 0.0 ? (x - m_timelineGrabOffset) / strip * duration : 0.0; // for clip drags
     const ::regif::TextClip& from = m_clipDragStart;
+    // Clip edges snap to their neighbours within a few pixels; Alt drags freely.
+    const bool snapping = (args.KeyModifiers() & winrt::Windows::System::VirtualKeyModifiers::Menu) !=
+                          winrt::Windows::System::VirtualKeyModifiers::Menu;
+    const double tolerance = strip > 0.0 ? 8.0 / strip * duration : 0.0;
+    m_snapTime.reset();
     switch (m_timelineDrag) {
     case TimelineDrag::None: {
         bool onHandle = false;
@@ -1112,7 +1117,13 @@ void MainWindow::OnTimelinePointerMoved(IInspectable const&, xinput::PointerRout
     }
     case TimelineDrag::ClipMove: {
         const double length = from.endSec - from.startSec;
-        const double start = std::clamp(from.startSec + shift, 0.0, std::max(0.0, duration - length));
+        double start = std::clamp(from.startSec + shift, 0.0, std::max(0.0, duration - length));
+        if (snapping) {
+            if (const auto snap = ::regif::snapRange(start, start + length, SnapTargets(from.id), tolerance)) {
+                start = std::clamp(start + snap->shift, 0.0, std::max(0.0, duration - length));
+                m_snapTime = snap->target;
+            }
+        }
         EditSelectedClip([&](::regif::TextClip& clip) {
             clip.startSec = start;
             clip.endSec = start + length;
@@ -1121,13 +1132,27 @@ void MainWindow::OnTimelinePointerMoved(IInspectable const&, xinput::PointerRout
         break;
     }
     case TimelineDrag::ClipStart: {
-        const double start = std::clamp(from.startSec + shift, 0.0, std::max(0.0, from.endSec - FrameStep()));
+        double start = std::clamp(from.startSec + shift, 0.0, std::max(0.0, from.endSec - FrameStep()));
+        if (snapping) {
+            const auto snap = ::regif::snapRange(start, start, SnapTargets(from.id), tolerance);
+            if (snap && snap->target <= from.endSec - FrameStep()) {
+                start = snap->target;
+                m_snapTime = snap->target;
+            }
+        }
         EditSelectedClip([&](::regif::TextClip& clip) { clip.startSec = start; });
         SetPlayhead(start);
         break;
     }
     case TimelineDrag::ClipEnd: {
-        const double end = std::clamp(from.endSec + shift, std::min(duration, from.startSec + FrameStep()), duration);
+        double end = std::clamp(from.endSec + shift, std::min(duration, from.startSec + FrameStep()), duration);
+        if (snapping) {
+            const auto snap = ::regif::snapRange(end, end, SnapTargets(from.id), tolerance);
+            if (snap && snap->target >= from.startSec + FrameStep()) {
+                end = snap->target;
+                m_snapTime = snap->target;
+            }
+        }
         EditSelectedClip([&](::regif::TextClip& clip) { clip.endSec = end; });
         SetPlayhead(std::max(from.startSec, end - FrameStep())); // the last frame it shows on
         break;
@@ -1143,6 +1168,8 @@ void MainWindow::OnTimelinePointerReleased(IInspectable const&, xinput::PointerR
 {
     if (m_timelineDrag == TimelineDrag::None) return;
     m_timelineDrag = TimelineDrag::None;
+    m_snapTime.reset();
+    LayoutLanes();
     TimelineSurface().ReleasePointerCapture(args.Pointer());
     args.Handled(true);
 }
@@ -1150,6 +1177,8 @@ void MainWindow::OnTimelinePointerReleased(IInspectable const&, xinput::PointerR
 void MainWindow::OnTimelinePointerCaptureLost(IInspectable const&, xinput::PointerRoutedEventArgs const&)
 {
     m_timelineDrag = TimelineDrag::None;
+    m_snapTime.reset();
+    LayoutLanes();
 }
 
 void MainWindow::OnTimelineDoubleTapped(IInspectable const&, xinput::DoubleTappedRoutedEventArgs const& args)

@@ -134,6 +134,7 @@ take their version from the tag).
 | I / O | Set the trim start / end at the playhead (timeline focused) |
 | Double-click | Edit text in place (on the preview or its clip on a track) |
 | Esc | Finish editing text |
+| Alt while dragging a clip | Don't snap to neighbouring clips |
 
 ## Current limitations
 

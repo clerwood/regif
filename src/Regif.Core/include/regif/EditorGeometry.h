@@ -2,6 +2,7 @@
 
 #include "Operations.h"
 
+#include <optional>
 #include <vector>
 
 namespace regif {
@@ -36,6 +37,16 @@ CropRect fitAspect(const CropRect& crop, double aspect);
 
 // Whole-pixel crop for the rectangle, clamped to the frame.
 CropOp toCropOp(const CropRect& crop, int frameWidth, int frameHeight);
+
+// Snapping for timeline drags, all in the same unit.
+struct Snap {
+    double shift;  // add this to what's being dragged
+    double target; // where it snapped to
+};
+
+// For a range [start, end] being moved: the smallest shift that puts either edge on a target
+// within `tolerance`. For resizing one edge, pass the same value as start and end.
+std::optional<Snap> snapRange(double start, double end, const std::vector<double>& targets, double tolerance);
 
 // Times (seconds) at the centre of `count` equal slots across the clip, for timeline stills.
 std::vector<double> thumbnailTimes(double durationSec, int count);
