@@ -17,6 +17,23 @@ without the `gpl` or `nonfree` features and is **dynamically linked**: the `av*.
 
 If you redistribute regif, keep this notice and make the corresponding FFmpeg source available.
 
+## Text rendering libraries
+
+FFmpeg's `drawtext` filter (used to draw text overlays) brings in these libraries, shipped as
+DLLs next to `Regif.exe`. Versions are those pinned by the vcpkg baseline in `vcpkg.json`.
+
+- **FreeType** (`freetype.dll`): used under the FreeType License (FTL), not the GPL option.
+  Portions of this software are copyright © The FreeType Project (https://freetype.org).
+  All rights reserved.
+- **HarfBuzz** (`harfbuzz*.dll`): MIT license. https://github.com/harfbuzz/harfbuzz
+- **zlib** (`z.dll`): zlib license. https://zlib.net
+- **libpng** (`libpng16.dll`): PNG Reference Library License version 2. http://www.libpng.org
+- **bzip2** (`bz2.dll`): bzip2 license (BSD-style). https://sourceware.org/bzip2/
+- **Brotli** (`brotli*.dll`): MIT license. https://github.com/google/brotli
+
+Each library's full license text is in its source distribution and in vcpkg's
+`installed/<triplet>/share/<port>/copyright`.
+
 ## Windows App SDK and C++/WinRT
 
 The Windows App SDK runtime files shipped with the self-contained build are distributed under

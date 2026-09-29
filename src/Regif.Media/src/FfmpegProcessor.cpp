@@ -64,6 +64,7 @@ public:
         drainFilter();
         encode(nullptr); // flush the encoder
         if (m_framesEncoded == 0) throw MediaError("This change would leave no frames.");
+        writeHeldPacket();
 
         check(av_write_trailer(m_output.get()), "Couldn't finish writing the file");
         check(avio_closep(&m_output->pb), "Couldn't finish writing the file");
@@ -239,8 +240,32 @@ private:
             check(got, "Couldn't encode the output");
             m_encoded->stream_index = m_outStream->index;
             av_packet_rescale_ts(m_encoded.get(), enc->time_base, m_outStream->time_base);
-            check(av_interleaved_write_frame(m_output.get(), m_encoded.get()), "Couldn't write the output");
+            queuePacket(m_encoded.get());
         }
+    }
+
+    // Packets are written one behind, so a packet without a duration can take it from the
+    // next one's timestamp. Otherwise the last GIF frame would get the minimum delay (10 ms)
+    // instead of its own, and flash past on every loop.
+    void queuePacket(AVPacket* packet)
+    {
+        if (m_haveHeld) {
+            if (packet->pts != AV_NOPTS_VALUE && m_held->pts != AV_NOPTS_VALUE && packet->pts > m_held->pts) {
+                m_lastDelta = packet->pts - m_held->pts;
+                if (m_held->duration <= 0) m_held->duration = m_lastDelta;
+            }
+            check(av_interleaved_write_frame(m_output.get(), m_held.get()), "Couldn't write the output");
+        }
+        av_packet_move_ref(m_held.get(), packet);
+        m_haveHeld = true;
+    }
+
+    void writeHeldPacket()
+    {
+        if (!m_haveHeld) return;
+        if (m_held->duration <= 0) m_held->duration = m_lastDelta; // the last frame lasts as long as the one before
+        check(av_interleaved_write_frame(m_output.get(), m_held.get()), "Couldn't write the output");
+        m_haveHeld = false;
     }
 
     // Progress is half decoding, half encoding. For GIFs the palette needs every frame
@@ -282,6 +307,9 @@ private:
     FramePtr m_decoded;
     FramePtr m_filtered;
     PacketPtr m_encoded;
+    PacketPtr m_held = makePacket(); // see queuePacket
+    bool m_haveHeld = false;
+    std::int64_t m_lastDelta = 0;
 
     FilterGraphPtr m_graph;
     AVFilterContext* m_source = nullptr; // owned by m_graph

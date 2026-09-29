@@ -6,8 +6,10 @@
 #include <regif/FfmpegProcessor.h>
 #include <regif/FrameGrabber.h>
 #include <regif/Session.h>
+#include <regif/TextRenderer.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -247,6 +249,134 @@ TEST_CASE("frame grabber sequences match single grabs")
         sequence.grabSequence(times, 60, [&](std::size_t, VideoFrameBgra&&) { return ++calls < 2; });
         CHECK_EQ(calls, std::size_t(2)); // stops when the callback returns false
     }
+}
+
+namespace {
+
+std::string windowsFont(const char* file)
+{
+    const char* windir = std::getenv("WINDIR");
+    return pathToUtf8(fs::path(windir ? windir : "C:\\Windows") / "Fonts" / file);
+}
+
+TextClip sampleText(TextAlign align)
+{
+    TextClip clip;
+    clip.text = "Hi";
+    clip.startSec = 0.0;
+    clip.endSec = 2.0;
+    clip.x = 80;
+    clip.y = 20;
+    clip.style.fontFile = windowsFont("arialbd.ttf");
+    clip.style.fontSize = 30;
+    clip.style.align = align;
+    clip.style.strokeWidth = 2;
+    return clip;
+}
+
+} // namespace
+
+TEST_CASE("text renders around its anchor for each alignment")
+{
+    const RenderedText center = renderText(sampleText(TextAlign::Center));
+    CHECK(center.image.width > 20 && center.image.height > 15);
+    CHECK_EQ(center.image.pixels.size(), std::size_t(center.image.width) * center.image.height * 4);
+    CHECK_NEAR(center.offsetX + center.image.width / 2.0, 0.0, 3.0);
+    CHECK(center.offsetY > -4.0 && center.offsetY < 12.0); // y is the top of the font's line box
+
+    const RenderedText left = renderText(sampleText(TextAlign::Left));
+    CHECK_NEAR(left.offsetX, 0.0, 4.0);
+    const RenderedText right = renderText(sampleText(TextAlign::Right));
+    CHECK_NEAR(right.offsetX + right.image.width, 0.0, 4.0);
+
+    // Premultiplied: no colour channel exceeds alpha.
+    bool premultiplied = true;
+    for (std::size_t i = 0; i + 3 < center.image.pixels.size(); i += 4)
+        for (std::size_t c = 0; c < 3; ++c) premultiplied &= center.image.pixels[i + c] <= center.image.pixels[i + 3];
+    CHECK(premultiplied);
+
+    TextClip blank = sampleText(TextAlign::Center);
+    blank.text.clear();
+    CHECK(renderText(blank).image.pixels.empty());
+
+    TextClip badFont = sampleText(TextAlign::Center);
+    badFont.style.fontFile = pathToUtf8(g_assets / "no-such-font.ttf");
+    CHECK_THROWS_AS(renderText(badFont), MediaError);
+}
+
+// Bounding box of the pixels that clearly differ between two same-sized frames.
+struct DiffBox {
+    int left, top, right, bottom;
+    bool empty() const { return right < left; }
+};
+
+static DiffBox diffBox(const VideoFrameBgra& a, const VideoFrameBgra& b)
+{
+    DiffBox box{ a.width, a.height, -1, -1 };
+    for (int y = 0; y < a.height; ++y) {
+        for (int x = 0; x < a.width; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * a.width + x) * 4;
+            int diff = 0;
+            for (std::size_t c = 0; c < 3; ++c) diff = std::max(diff, std::abs(int(a.pixels[i + c]) - int(b.pixels[i + c])));
+            if (diff < 80) continue;
+            box.left = std::min(box.left, x);
+            box.right = std::max(box.right, x);
+            box.top = std::min(box.top, y);
+            box.bottom = std::max(box.bottom, y);
+        }
+    }
+    return box;
+}
+
+TEST_CASE("exported text lands where and when the preview draws it")
+{
+    // Two exports through the same pipeline, with the text shown in the first or second second.
+    // Comparing them isolates the text from colour conversion differences.
+    TempDir temp;
+    const TextClip clip = sampleText(TextAlign::Center);
+    auto exportWith = [&](double start, double end, const char* name) {
+        Session session(g_assets / "clip.mp4", temp.path(), processor());
+        TextClip timed = clip;
+        timed.startSec = start;
+        timed.endSec = end;
+        session.addTextClip(session.addTextTrack("Titles"), timed);
+        CHECK_EQ(session.exportExtension(), std::string(".mkv"));
+        const fs::path out = temp.path() / name;
+        session.exportCurrent(out);
+        return out;
+    };
+    const fs::path first = exportWith(0.0, 1.0, "first.mkv");
+    const fs::path second = exportWith(1.0, 2.0, "second.mkv");
+
+    const RenderedText preview = renderText(clip);
+    const double expectLeft = clip.x + preview.offsetX, expectTop = clip.y + preview.offsetY;
+    for (const double t : { 0.5, 1.5 }) {
+        const VideoFrameBgra a = FrameGrabber(first).grab(t);
+        const VideoFrameBgra b = FrameGrabber(second).grab(t);
+        CHECK_EQ(a.width, 160);
+        const DiffBox box = diffBox(a, b);
+        CHECK(!box.empty());
+        CHECK(box.left >= expectLeft - 1 && box.top >= expectTop - 1);
+        CHECK(box.right <= expectLeft + preview.image.width + 1 && box.bottom <= expectTop + preview.image.height + 1);
+        CHECK(box.right - box.left + 1 >= preview.image.width * 0.7);
+        CHECK(box.bottom - box.top + 1 >= preview.image.height * 0.6);
+    }
+}
+
+TEST_CASE("text burned into a GIF keeps every frame")
+{
+    TempDir temp;
+    Session session(g_assets / "clip.gif", temp.path(), processor());
+    session.addTextClip(session.addTextTrack("Titles"), sampleText(TextAlign::Center));
+    CHECK_EQ(session.exportExtension(), std::string(".gif"));
+    const fs::path out = temp.path() / "titled.gif";
+    session.exportCurrent(out);
+    const MediaInfo before = processor().probe(g_assets / "clip.gif");
+    const MediaInfo after = processor().probe(out);
+    CHECK_EQ(after.frameCount, before.frameCount);
+    // The last frame keeps a full delay (the source ends 70 ms after it; we give it the previous 60 ms).
+    CHECK_NEAR(after.durationSec, before.durationSec, 0.02);
+    CHECK_EQ(after.width, before.width);
 }
 
 int main(int argc, char** argv)

@@ -72,12 +72,14 @@
   <ItemGroup>
     <ClInclude Include="include\regif\FfmpegProcessor.h" />
     <ClInclude Include="include\regif\FrameGrabber.h" />
+    <ClInclude Include="include\regif\TextRenderer.h" />
     <ClInclude Include="src\FfmpegCommon.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\FfmpegCommon.cpp" />
     <ClCompile Include="src\FfmpegProcessor.cpp" />
     <ClCompile Include="src\FrameGrabber.cpp" />
+    <ClCompile Include="src\TextRenderer.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
