@@ -29,7 +29,8 @@ public:
     FrameGrabber& operator=(const FrameGrabber&) = delete;
 
     // The frame on screen at `seconds`, scaled to fit within maxDimension and with any
-    // container rotation applied. Throws MediaError.
+    // container rotation applied. Grabs up to 2 s after the previous one keep decoding
+    // forward (cheap enough for playback); others seek. Throws MediaError.
     VideoFrameBgra grab(double seconds, int maxDimension = 1280);
 
     // Frames at each of `seconds` (ascending), for timeline thumbnails. Each frame is passed to

@@ -20,6 +20,8 @@ struct FrameGrabber::Impl {
     FramePtr frame = makeFrame();
     FramePtr best = makeFrame();
     bool pending = false; // `frame` holds a decoded frame that decodeUntil read past its target
+    bool positioned = false;                   // the decoder sits just after the frame in `best`
+    std::int64_t shownPts = AV_NOPTS_VALUE;    // that frame's timestamp
     SwsPtr sws;
     int swsSrcW = 0, swsSrcH = 0, swsSrcFormat = -1, swsDstW = 0, swsDstH = 0;
 
@@ -152,6 +154,7 @@ void FrameGrabber::grabSequence(const std::vector<double>& seconds, int maxDimen
         return;
     }
 
+    impl.positioned = false; // this pass moves the decoder on its own terms
     impl.input = openVideoInput(impl.file, true);
     AVStream* stream = impl.input.stream;
     const std::int64_t start = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
@@ -186,18 +189,28 @@ VideoFrameBgra FrameGrabber::grab(double seconds, int maxDimension)
         av_rescale_q(std::llround(std::max(0.0, seconds) * AV_TIME_BASE), AV_TIME_BASE_Q, stream->time_base);
     const std::int64_t target = start + offset;
 
-    if (impl.isGif) {
-        // GIF frames build on the previous canvas and the demuxer can't seek reliably, so
-        // decode from the start. GIFs are small enough for this to stay interactive.
-        impl.input = openVideoInput(impl.file, true);
-    } else {
-        // Seek to the keyframe at or before the target, then decode forward.
-        if (av_seek_frame(impl.input.format.get(), impl.input.streamIndex, target, AVSEEK_FLAG_BACKWARD) < 0)
-            av_seek_frame(impl.input.format.get(), impl.input.streamIndex, start, AVSEEK_FLAG_BACKWARD);
-        avcodec_flush_buffers(impl.input.decoder.get());
+    // Playback and small steps forward keep decoding from where the last grab stopped; only
+    // jumps backwards or far ahead seek (or, for GIFs, start over).
+    const std::int64_t aheadLimit = av_rescale_q(2 * AV_TIME_BASE, AV_TIME_BASE_Q, stream->time_base);
+    const bool forward = impl.positioned && impl.shownPts != AV_NOPTS_VALUE && target >= impl.shownPts &&
+                         target - impl.shownPts <= aheadLimit;
+    if (!forward) {
+        if (impl.isGif) {
+            // GIF frames build on the previous canvas and the demuxer can't seek reliably, so
+            // decode from the start. GIFs are small enough for this to stay interactive.
+            impl.input = openVideoInput(impl.file, true);
+        } else {
+            // Seek to the keyframe at or before the target, then decode forward.
+            if (av_seek_frame(impl.input.format.get(), impl.input.streamIndex, target, AVSEEK_FLAG_BACKWARD) < 0)
+                av_seek_frame(impl.input.format.get(), impl.input.streamIndex, start, AVSEEK_FLAG_BACKWARD);
+            avcodec_flush_buffers(impl.input.decoder.get());
+        }
     }
 
-    if (!impl.decodeUntil(target)) throw MediaError("Couldn't decode a frame at this position.");
+    impl.positioned = false; // until this decode succeeds
+    if (!impl.decodeUntil(target, forward)) throw MediaError("Couldn't decode a frame at this position.");
+    impl.shownPts = framePts(impl.best.get());
+    impl.positioned = true;
     return impl.convert(maxDimension);
 }
 

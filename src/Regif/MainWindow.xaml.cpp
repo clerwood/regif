@@ -28,7 +28,6 @@ using winrt::Windows::Foundation::IInspectable;
 namespace fs = std::filesystem;
 namespace imaging = winrt::Microsoft::UI::Xaml::Media::Imaging;
 namespace pickers = winrt::Windows::Storage::Pickers;
-namespace streams = winrt::Windows::Storage::Streams;
 namespace datatransfer = winrt::Windows::ApplicationModel::DataTransfer;
 namespace media = winrt::Microsoft::UI::Xaml::Media;
 namespace shapes = winrt::Microsoft::UI::Xaml::Shapes;
@@ -74,17 +73,6 @@ winrt::fire_and_forget CleanupStaleSessionsAsync()
     } catch (...) {
         // Best effort: leftovers are retried on the next start.
     }
-}
-
-std::vector<std::uint8_t> ReadAllBytes(const fs::path& file)
-{
-    const auto size = fs::file_size(file);
-    if (size > 0xFFFFFFFFull) throw std::runtime_error("This GIF is too large to preview.");
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-    std::ifstream in(file, std::ios::binary);
-    if (!in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-        throw std::runtime_error("Couldn't read " + ::regif::pathToUtf8(file));
-    return bytes;
 }
 
 ::regif::Dither DitherFromIndex(int index)
@@ -151,6 +139,10 @@ void MainWindow::InitializeComponent()
     CreateCropShapes();
     InitializeText();
 
+    m_playbackTimer = DispatcherQueue().CreateTimer();
+    m_playbackTimer.IsRepeating(true);
+    m_playbackTimer.Tick([this](auto&&, auto&&) { OnPlaybackTick(); });
+
     m_thumbnailTimer = DispatcherQueue().CreateTimer();
     m_thumbnailTimer.Interval(std::chrono::milliseconds(250));
     m_thumbnailTimer.IsRepeating(false);
@@ -164,6 +156,7 @@ void MainWindow::InitializeComponent()
         ++m_previewGeneration;
         m_grabber.reset();
         m_thumbnailTimer.Stop();
+        m_playbackTimer.Stop();
         if (m_thumbnailCancel) m_thumbnailCancel->store(true);
         // Deleting the session removes its working folder. A busy session is still in use by a
         // background render; it goes away with the window once that render stops.
@@ -471,27 +464,23 @@ winrt::fire_and_forget MainWindow::ShowCurrentStage()
     auto lifetime = get_strong();
     auto queue = DispatcherQueue();
     const unsigned generation = ++m_previewGeneration;
+    StopPlayback();
     EndInlineEdit();
     m_grabber.reset();
-    m_gifBitmap = nullptr;
     PreviewImage().Source(nullptr);
-    m_playing = false;
     RefreshUi();
     LoadThumbnails();
     RefreshTextVisuals(); // stages can move, retime or rescale text
     RefreshTextPanel();
     if (!m_session) co_return;
 
+    // Videos and GIFs alike are shown as decoded frames, so both play from the playhead with text.
     const ::regif::Stage stage = m_session->current();
-    const bool isGif = stage.info.kind == ::regif::MediaKind::Gif;
-
     std::shared_ptr<::regif::FrameGrabber> grabber;
-    std::vector<std::uint8_t> bytes;
     std::exception_ptr error;
     co_await winrt::resume_background();
     try {
         grabber = std::make_shared<::regif::FrameGrabber>(stage.file);
-        if (isGif) bytes = ReadAllBytes(stage.file); // read into memory so the file stays unlocked
     } catch (...) {
         error = std::current_exception();
     }
@@ -500,33 +489,8 @@ winrt::fire_and_forget MainWindow::ShowCurrentStage()
         ShowError(L"Couldn't show a preview", error);
         co_return;
     }
-
     m_grabber = grabber;
-    if (!isGif) {
-        RequestFrame(m_playheadSec);
-        co_return;
-    }
-
-    imaging::BitmapImage bitmap;
-    try {
-        streams::Buffer buffer(static_cast<uint32_t>(bytes.size()));
-        if (!bytes.empty()) std::memcpy(buffer.data(), bytes.data(), bytes.size());
-        buffer.Length(static_cast<uint32_t>(bytes.size()));
-        streams::InMemoryRandomAccessStream stream;
-        co_await stream.WriteAsync(buffer);
-        stream.Seek(0);
-        if (!co_await ResumeOn{ queue }) co_return;
-        co_await bitmap.SetSourceAsync(stream); // animated GIFs play automatically
-    } catch (winrt::hresult_error const&) {
-        error = std::current_exception();
-    }
-    if (!co_await ResumeOn{ queue } || m_closed || generation != m_previewGeneration) co_return;
-    if (error) {
-        ShowError(L"Couldn't show a preview", error);
-        co_return;
-    }
-    m_gifBitmap = bitmap;
-    PreviewImage().Source(bitmap);
+    RequestFrame(m_playheadSec);
 }
 
 // Decodes at most one preview frame at a time; requests that arrive meanwhile are
@@ -543,7 +507,6 @@ winrt::fire_and_forget MainWindow::RequestFrame(double seconds)
         const double target = *m_pendingFrameTime;
         m_pendingFrameTime.reset();
         const unsigned generation = m_previewGeneration;
-        const unsigned stillToken = m_stillToken;
         auto grabber = m_grabber;
 
         std::optional<::regif::VideoFrameBgra> frame;
@@ -554,7 +517,7 @@ winrt::fire_and_forget MainWindow::RequestFrame(double seconds)
             // A missing preview frame isn't worth interrupting the user for.
         }
         if (!co_await ResumeOn{ queue }) co_return;
-        if (frame && !m_closed && generation == m_previewGeneration && stillToken == m_stillToken) ShowFrame(*frame);
+        if (frame && !m_closed && generation == m_previewGeneration) ShowFrame(*frame);
     }
     m_frameInFlight = false;
 }
@@ -573,23 +536,85 @@ void MainWindow::ShowFrame(const ::regif::VideoFrameBgra& frame)
 
 void MainWindow::OnPlayClick(IInspectable const&, RoutedEventArgs const&)
 {
-    if (!m_gifBitmap) return;
-    ++m_stillToken; // drop any still frame that's still being decoded
-    m_pendingFrameTime.reset();
-    PreviewImage().Source(m_gifBitmap);
-    m_gifBitmap.Play();
-    m_playing = true; // text is shown for one moment, so hide it while the GIF plays
-    LayoutTextOverlay();
+    if (m_playing) StopPlayback();
+    else StartPlayback();
+}
+
+void MainWindow::StartPlayback()
+{
+    const double duration = TimelineDuration();
+    if (!m_session || m_busy || m_playing || duration <= 0.0) return;
+    EndInlineEdit();
+    if (m_playheadSec >= duration - FrameStep() / 2) MovePlayhead(0.0); // at the end: start over
+    const double fps = m_session->current().info.frameRate;
+    m_playbackTimer.Interval(std::chrono::milliseconds(std::clamp(fps > 0.0 ? static_cast<int>(1000.0 / fps) : 33, 10, 40)));
+    m_playbackOrigin = m_playheadSec;
+    m_playbackStartedAt = std::chrono::steady_clock::now();
+    m_playing = true;
+    m_playbackTimer.Start();
+    PlayIcon().Symbol(Symbol::Pause);
+    ToolTipService::SetToolTip(PlayButton(), winrt::box_value(L"Pause (Space)"));
+}
+
+void MainWindow::StopPlayback()
+{
+    if (!m_playing) return;
+    m_playing = false;
+    m_playbackTimer.Stop();
+    PlayIcon().Symbol(Symbol::Play);
+    ToolTipService::SetToolTip(PlayButton(), winrt::box_value(L"Play from the playhead (Space)"));
+}
+
+// The playhead follows the clock; slow decoding drops frames instead of slowing time down.
+void MainWindow::OnPlaybackTick()
+{
+    if (!m_playing || !m_session || m_closed) return StopPlayback();
+    const double duration = TimelineDuration();
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_playbackStartedAt).count();
+    const double t = m_playbackOrigin + elapsed;
+    if (t >= duration) {
+        MovePlayhead(duration);
+        StopPlayback();
+        return;
+    }
+    MovePlayhead(t);
+}
+
+bool MainWindow::IsTyping()
+{
+    const auto focused = xinput::FocusManager::GetFocusedElement(Content().XamlRoot());
+    if (!focused) return false;
+    if (focused.try_as<TextBox>() || focused.try_as<PasswordBox>() || focused.try_as<RichEditBox>() ||
+        focused.try_as<AutoSuggestBox>() || focused.try_as<ComboBoxItem>())
+        return true;
+    const auto combo = focused.try_as<ComboBox>();
+    return combo && combo.IsDropDownOpen();
+}
+
+// Window-wide shortcuts that aren't on a button. Ctrl+O, Ctrl+S, Ctrl+Z and Ctrl+Y are keyboard
+// accelerators on the command bar buttons.
+void MainWindow::OnRootPreviewKeyDown(IInspectable const&, xinput::KeyRoutedEventArgs const& args)
+{
+    if (args.Key() != winrt::Windows::System::VirtualKey::Space || !m_session || IsTyping()) return;
+    args.Handled(true); // also stops a focused button from being pressed
+    if (args.KeyStatus().WasKeyDown) return; // holding Space doesn't flicker between play and pause
+    if (m_playing) StopPlayback();
+    else StartPlayback();
 }
 
 void MainWindow::SetPlayhead(double seconds, bool showFrame)
+{
+    StopPlayback();
+    MovePlayhead(seconds, showFrame);
+}
+
+void MainWindow::MovePlayhead(double seconds, bool showFrame)
 {
     if (!m_session) return;
     m_playheadSec = std::clamp(seconds, 0.0, TimelineDuration());
     PositionText().Text(winrt::hstring(std::format(L"{:.2f} / {:.2f} s", m_playheadSec, TimelineDuration())));
     Canvas::SetLeft(Playhead(), TimelineX(m_playheadSec) - 1.0);
-    m_playing = false;
-    LayoutTextOverlay();
+    LayoutTextOverlay(); // text comes and goes with time
     if (showFrame) RequestFrame(m_playheadSec);
 }
 
@@ -749,6 +774,7 @@ void MainWindow::OnPreviewSurfaceSizeChanged(IInspectable const&, SizeChangedEve
 void MainWindow::OnPreviewPointerPressed(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
 {
     EndInlineEdit(); // clicking elsewhere on the preview finishes editing (the editor handles its own clicks)
+    StopPlayback();
     const PreviewLayout layout = CropLayout();
     if (m_busy || !layout) return;
     const auto p = args.GetCurrentPoint(PreviewSurface()).Position();
@@ -1223,7 +1249,7 @@ void MainWindow::RefreshUi()
     SpeedExpander().Visibility(VisibleIf(isGif));
     OptimizeExpander().Visibility(VisibleIf(isGif));
     ConvertExpander().Visibility(VisibleIf(!isGif));
-    PlayButton().Visibility(VisibleIf(isGif));
+    PlayButton().Visibility(VisibleIf(info.durationSec > 0.0));
 
     StageTitle().Text(winrt::hstring(m_session->originalPath().filename().wstring()));
     std::wstring details = Wide(::regif::summarize(info));
@@ -1247,6 +1273,7 @@ void MainWindow::RefreshUi()
 
 void MainWindow::SetBusy(bool busy, winrt::hstring const& message)
 {
+    if (busy) StopPlayback();
     m_busy = busy;
     BusyProgress().IsIndeterminate(true);
     BusyProgress().Value(0);

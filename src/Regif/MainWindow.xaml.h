@@ -7,6 +7,7 @@
 #include <regif/TextRenderer.h>
 #include <regif/Session.h>
 
+#include <chrono>
 #include <functional>
 #include <map>
 
@@ -96,6 +97,8 @@ struct MainWindow : MainWindowT<MainWindow> {
                            Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
     void OnTimelineDoubleTapped(winrt::Windows::Foundation::IInspectable const& sender,
                                 Microsoft::UI::Xaml::Input::DoubleTappedRoutedEventArgs const& args);
+    void OnRootPreviewKeyDown(winrt::Windows::Foundation::IInspectable const& sender,
+                              Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
     void OnDragOver(winrt::Windows::Foundation::IInspectable const& sender, Microsoft::UI::Xaml::DragEventArgs const& args);
     winrt::fire_and_forget OnDrop(winrt::Windows::Foundation::IInspectable sender, Microsoft::UI::Xaml::DragEventArgs args);
 
@@ -108,7 +111,14 @@ private:
     winrt::fire_and_forget LoadThumbnails();
 
     void ShowFrame(const ::regif::VideoFrameBgra& frame);
-    void SetPlayhead(double seconds, bool showFrame = true);
+    void SetPlayhead(double seconds, bool showFrame = true);  // a user action: stops playback
+    void MovePlayhead(double seconds, bool showFrame = true); // also used by playback
+
+    // Playback: the playhead moves in real time and frames are decoded as it goes.
+    void StartPlayback();
+    void StopPlayback();
+    void OnPlaybackTick();
+    bool IsTyping(); // keyboard focus is somewhere that takes text, so Space is a character
 
     // Crop overlay
     struct PreviewLayout {
@@ -179,7 +189,6 @@ private:
     std::shared_ptr<::regif::FrameGrabber> m_grabber;
 
     Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap m_frameBitmap{ nullptr };
-    Microsoft::UI::Xaml::Media::Imaging::BitmapImage m_gifBitmap{ nullptr };
 
     bool m_busy = false;
     bool m_closed = false;
@@ -187,7 +196,10 @@ private:
     bool m_frameInFlight = false;
     std::optional<double> m_pendingFrameTime;
     unsigned m_previewGeneration = 0; // bumped whenever the previewed stage changes
-    unsigned m_stillToken = 0;        // bumped when the GIF animation takes over from a still frame
+    bool m_playing = false;
+    double m_playbackOrigin = 0.0; // playhead position when playback started
+    std::chrono::steady_clock::time_point m_playbackStartedAt;
+    Microsoft::UI::Dispatching::DispatcherQueueTimer m_playbackTimer{ nullptr };
     double m_playheadSec = 0.0;
 
     // Crop overlay: the rectangle in source pixels (the boxes show it rounded).
@@ -215,7 +227,6 @@ private:
     std::uint64_t m_selectedClip = 0;
     bool m_textDragging = false;
     bool m_updatingText = false; // filling the text panel from a clip
-    bool m_playing = false;      // the GIF animation is showing, so text for one time would be wrong
     Microsoft::UI::Xaml::Shapes::Rectangle m_textSelection{ nullptr };
     Microsoft::UI::Xaml::Controls::TextBox m_inlineEditor{ nullptr }; // made per edit, so its colours apply
     std::uint64_t m_inlineClip = 0;

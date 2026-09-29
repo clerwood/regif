@@ -501,12 +501,12 @@ void MainWindow::LayoutTextOverlay()
     const PreviewLayout layout = CropLayout();
     if (m_inlineClip != 0) {
         const auto clip = SelectedClip();
-        if (!layout || m_playing || !clip || clip->id != m_inlineClip || !::regif::isVisibleAt(*clip, m_playheadSec)) {
+        if (!layout || !clip || clip->id != m_inlineClip || !::regif::isVisibleAt(*clip, m_playheadSec)) {
             EndInlineEdit(); // lays the overlay out again
             return;
         }
     }
-    if (!m_session || !layout || m_playing) return;
+    if (!m_session || !layout) return;
 
     const double s = layout.scale;
     bool selectionShown = false;
@@ -639,7 +639,7 @@ void MainWindow::LayoutInlineEditor()
 std::optional<::regif::TextClip> MainWindow::TextClipAt(double x, double y)
 {
     const PreviewLayout layout = CropLayout();
-    if (!m_session || !layout || m_playing) return std::nullopt;
+    if (!m_session || !layout) return std::nullopt;
     const auto layer = m_session->textLayer();
     for (auto track = layer.tracks.rbegin(); track != layer.tracks.rend(); ++track) { // topmost first
         for (auto clip = track->clips.rbegin(); clip != track->clips.rend(); ++clip) {

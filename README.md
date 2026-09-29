@@ -121,13 +121,27 @@ take their version from the tag).
 | `installer/` | Inno Setup script. |
 | `docs/ARCHITECTURE.md` | How it fits together, and the roadmap. |
 
+## Keyboard shortcuts
+
+| Keys | Action |
+| --- | --- |
+| Ctrl+O | Open |
+| Ctrl+S | Export |
+| Ctrl+Z / Ctrl+Y | Undo / redo a stage |
+| Space | Play or pause from the playhead (unless you're typing) |
+| ← / → | One frame back / forward (timeline focused) |
+| PageUp / PageDown, Home / End | One second back / forward, start / end (timeline focused) |
+| I / O | Set the trim start / end at the playhead (timeline focused) |
+| Double-click | Edit text in place (on the preview or its clip on a track) |
+| Esc | Finish editing text |
+
 ## Current limitations
 
 - No audio: GIFs have none, and video stages drop the audio track.
 - Exporting a video stage (for example a trimmed clip before converting) writes lossless FFV1
   Matroska (`.mkv`). It plays in VLC and mpv but not in every player, and it's large. MP4
   export is on the roadmap. Exporting the original (stage 1) writes an exact copy.
-- Video preview is a still frame you scrub on the timeline rather than playback. GIFs animate.
+- Preview playback decodes on the CPU and skips frames when it can't keep up (large 4K videos).
 - Cutting out a middle section is entered as numbers; the timeline handles only trim the ends.
 - AV1 videos need FFmpeg's `dav1d` feature, which isn't enabled in `vcpkg.json` yet.
 - Mirrored (flipped) phone videos are shown rotated but not un-mirrored.

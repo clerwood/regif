@@ -227,6 +227,28 @@ TEST_CASE("frame grabber returns upright BGRA frames")
     CHECK_NEAR(g.timeSec, 1.0, 0.1);
 }
 
+TEST_CASE("stepping forward like playback matches fresh grabs")
+{
+    for (const char* name : { "clip.mp4", "clip.gif" }) {
+        FrameGrabber playing(g_assets / name);
+        int mismatches = 0;
+        double last = -1.0;
+        // 40 steps a second: faster than either clip's frame rate, so some steps repeat a frame.
+        for (double t = 0.0; t < 2.0; t += 0.025) {
+            const VideoFrameBgra a = playing.grab(t, 80);
+            const VideoFrameBgra b = FrameGrabber(g_assets / name).grab(t, 80);
+            if (std::abs(a.timeSec - b.timeSec) > 1e-6 || a.pixels != b.pixels) ++mismatches;
+            CHECK(a.timeSec >= last); // never goes backwards
+            last = a.timeSec;
+        }
+        CHECK_EQ(mismatches, 0);
+
+        // Jumps back and far ahead still land on the right frame.
+        CHECK_NEAR(playing.grab(0.2, 80).timeSec, FrameGrabber(g_assets / name).grab(0.2, 80).timeSec, 1e-6);
+        CHECK_NEAR(playing.grab(1.9, 80).timeSec, FrameGrabber(g_assets / name).grab(1.9, 80).timeSec, 1e-6);
+    }
+}
+
 TEST_CASE("frame grabber sequences match single grabs")
 {
     // Two targets inside one GIF frame (15 fps) check that the one-pass decode doesn't skip ahead.

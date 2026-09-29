@@ -10,7 +10,7 @@
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid x:Name="RootGrid" AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop">
+    <Grid x:Name="RootGrid" AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop" PreviewKeyDown="OnRootPreviewKeyDown">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -99,8 +99,8 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <Button x:Name="PlayButton" Click="OnPlayClick" ToolTipService.ToolTip="Play the GIF" Visibility="Collapsed">
-                    <SymbolIcon Symbol="Play" />
+                <Button x:Name="PlayButton" Click="OnPlayClick" ToolTipService.ToolTip="Play from the playhead (Space)" AutomationProperties.Name="Play" Visibility="Collapsed">
+                    <SymbolIcon x:Name="PlayIcon" Symbol="Play" />
                 </Button>
                 <!-- Filmstrip, trim handles and playhead; laid out in code (LayoutTimeline). -->
                 <local:InteractiveSurface

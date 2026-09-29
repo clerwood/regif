@@ -104,8 +104,10 @@ survives (verified: 45 of 45 frames kept versus 21 with `1/fps`).
 - Preview frames are coalesced: while one frame decodes, newer slider positions replace the
   pending request, so dragging never builds a backlog. A generation counter discards results
   from a stage that is no longer shown.
-- GIF stages are shown as an animated `BitmapImage` loaded from memory (so the file stays
-  unlocked). Scrubbing a GIF shows still frames from `FrameGrabber`; Play resumes the animation.
+- Every stage, video or GIF, is shown as frames from `FrameGrabber`. Playback (Play or Space)
+  moves the playhead by the clock and requests the frame for each moment; requests are coalesced,
+  so slow decoding drops frames rather than falling behind. Grabs up to 2 s after the previous one
+  keep decoding forward instead of seeking, which is what makes playback affordable.
 - The crop overlay and the timeline are drawn on `InteractiveSurface` controls (a UserControl
   that can set the mouse cursor). Their geometry (hit testing, aspect-locked dragging, rounding
   to a `CropOp`, thumbnail times) lives in `Regif.Core`'s `EditorGeometry` and is unit-tested.
@@ -124,7 +126,7 @@ survives (verified: 45 of 45 frames kept versus 21 with `1/fps`).
 ## Roadmap
 
 - Timeline handles for cutting out a middle section.
-- Video playback in the preview.
+- Smoother playback for large videos (hardware decoding, or decoding ahead of the playhead).
 - MP4 (H.264 via Media Foundation, `h264_mf`) export for video stages.
 - Audio passthrough for video stages.
 - Two-pass palette generation to avoid buffering every frame for long clips; a lighter
