@@ -1,0 +1,10 @@
+namespace Regif
+{
+    // A focusable surface for the pointer-driven editors (crop overlay, timeline). The mouse
+    // cursor (UIElement.ProtectedCursor) can only be changed from a derived class.
+    runtimeclass InteractiveSurface : Microsoft.UI.Xaml.Controls.UserControl
+    {
+        InteractiveSurface();
+        void SetCursor(Microsoft.UI.Input.InputSystemCursorShape shape);
+    }
+}

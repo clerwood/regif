@@ -3,6 +3,7 @@
     x:Class="Regif.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Regif"
     Title="regif">
 
     <Window.SystemBackdrop>
@@ -60,6 +61,18 @@
                 CornerRadius="8">
                 <Grid>
                     <Image x:Name="PreviewImage" Stretch="Uniform" Margin="12" />
+                    <!-- Same margin as the image, so both lay out in the same box. -->
+                    <local:InteractiveSurface
+                        x:Name="CropSurface"
+                        Margin="12"
+                        Visibility="Collapsed"
+                        SizeChanged="OnCropSurfaceSizeChanged"
+                        PointerPressed="OnCropPointerPressed"
+                        PointerMoved="OnCropPointerMoved"
+                        PointerReleased="OnCropPointerReleased"
+                        PointerCaptureLost="OnCropPointerCaptureLost">
+                        <Canvas x:Name="CropCanvas" Background="Transparent" />
+                    </local:InteractiveSurface>
                     <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12" MaxWidth="360">
                         <FontIcon Glyph="&#xE714;" FontSize="48" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <TextBlock Text="Open a video or GIF to start" Style="{StaticResource SubtitleTextBlockStyle}" HorizontalAlignment="Center" />
@@ -82,14 +95,36 @@
                 <Button x:Name="PlayButton" Click="OnPlayClick" ToolTipService.ToolTip="Play the GIF" Visibility="Collapsed">
                     <SymbolIcon Symbol="Play" />
                 </Button>
-                <Slider
-                    x:Name="ScrubSlider"
+                <!-- Filmstrip, trim handles and playhead; laid out in code (LayoutTimeline). -->
+                <local:InteractiveSurface
+                    x:Name="TimelineSurface"
                     Grid.Column="1"
-                    Minimum="0"
-                    StepFrequency="0.01"
-                    IsThumbToolTipEnabled="False"
-                    VerticalAlignment="Center"
-                    ValueChanged="OnScrubValueChanged" />
+                    Height="68"
+                    IsTabStop="True"
+                    UseSystemFocusVisuals="True"
+                    AutomationProperties.Name="Timeline"
+                    ToolTipService.ToolTip="Click or drag to seek. Drag the handles to trim. Arrow keys step, I and O set the trim points."
+                    SizeChanged="OnTimelineSizeChanged"
+                    PointerPressed="OnTimelinePointerPressed"
+                    PointerMoved="OnTimelinePointerMoved"
+                    PointerReleased="OnTimelinePointerReleased"
+                    PointerCaptureLost="OnTimelinePointerCaptureLost"
+                    KeyDown="OnTimelineKeyDown">
+                    <Canvas Background="Transparent">
+                        <Border x:Name="FilmstripBackground" Background="{ThemeResource ControlAltFillColorSecondaryBrush}" />
+                        <Canvas x:Name="FilmstripCanvas" />
+                        <Rectangle x:Name="TrimShadeStart" Fill="#B3000000" IsHitTestVisible="False" />
+                        <Rectangle x:Name="TrimShadeEnd" Fill="#B3000000" IsHitTestVisible="False" />
+                        <Border x:Name="TrimFrame" BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" BorderThickness="0,3,0,3" IsHitTestVisible="False" />
+                        <Border x:Name="TrimHandleStart" Background="{ThemeResource AccentFillColorDefaultBrush}" CornerRadius="4,0,0,4" IsHitTestVisible="False">
+                            <Rectangle Width="2" Height="18" RadiusX="1" RadiusY="1" Fill="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                        </Border>
+                        <Border x:Name="TrimHandleEnd" Background="{ThemeResource AccentFillColorDefaultBrush}" CornerRadius="0,4,4,0" IsHitTestVisible="False">
+                            <Rectangle Width="2" Height="18" RadiusX="1" RadiusY="1" Fill="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                        </Border>
+                        <Rectangle x:Name="Playhead" Width="2" RadiusX="1" RadiusY="1" Fill="{ThemeResource TextFillColorPrimaryBrush}" IsHitTestVisible="False" />
+                    </Canvas>
+                </local:InteractiveSurface>
                 <TextBlock x:Name="PositionText" Grid.Column="2" VerticalAlignment="Center" MinWidth="120" TextAlignment="Right" />
             </Grid>
         </Grid>
@@ -101,8 +136,25 @@
                 <TextBlock x:Name="StageDetails" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
                 <StackPanel x:Name="EditPanel" Spacing="8" Visibility="Collapsed" Margin="0,8,0,0">
-                    <Expander Header="Crop" IsExpanded="True" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                    <Expander
+                        x:Name="CropExpander"
+                        Header="Crop"
+                        IsExpanded="True"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        Expanding="OnCropExpanding"
+                        Collapsed="OnCropCollapsed">
                         <StackPanel Spacing="12">
+                            <TextBlock Text="Drag the rectangle or its handles on the preview, or type the numbers." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ComboBox x:Name="CropAspect" Header="Aspect ratio" HorizontalAlignment="Stretch" SelectedIndex="0" SelectionChanged="OnCropAspectChanged">
+                                <x:String>Free</x:String>
+                                <x:String>Original</x:String>
+                                <x:String>1:1</x:String>
+                                <x:String>4:3</x:String>
+                                <x:String>3:4</x:String>
+                                <x:String>16:9</x:String>
+                                <x:String>9:16</x:String>
+                            </ComboBox>
                             <Grid ColumnSpacing="8" RowSpacing="8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -112,10 +164,10 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
-                                <NumberBox x:Name="CropX" Header="Left" Minimum="0" SpinButtonPlacementMode="Compact" />
-                                <NumberBox x:Name="CropY" Grid.Column="1" Header="Top" Minimum="0" SpinButtonPlacementMode="Compact" />
-                                <NumberBox x:Name="CropWidth" Grid.Row="1" Header="Width" Minimum="1" SpinButtonPlacementMode="Compact" />
-                                <NumberBox x:Name="CropHeight" Grid.Row="1" Grid.Column="1" Header="Height" Minimum="1" SpinButtonPlacementMode="Compact" />
+                                <NumberBox x:Name="CropX" Header="Left" Minimum="0" SpinButtonPlacementMode="Compact" ValueChanged="OnCropValueChanged" />
+                                <NumberBox x:Name="CropY" Grid.Column="1" Header="Top" Minimum="0" SpinButtonPlacementMode="Compact" ValueChanged="OnCropValueChanged" />
+                                <NumberBox x:Name="CropWidth" Grid.Row="1" Header="Width" Minimum="1" SpinButtonPlacementMode="Compact" ValueChanged="OnCropValueChanged" />
+                                <NumberBox x:Name="CropHeight" Grid.Row="1" Grid.Column="1" Header="Height" Minimum="1" SpinButtonPlacementMode="Compact" ValueChanged="OnCropValueChanged" />
                             </Grid>
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <Button Content="Crop" Style="{StaticResource AccentButtonStyle}" Click="OnCropClick" />
@@ -124,9 +176,9 @@
                         </StackPanel>
                     </Expander>
 
-                    <Expander Header="Trim" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                    <Expander x:Name="TrimExpander" Header="Trim" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
                         <StackPanel Spacing="12">
-                            <TextBlock Text="Keep only the part between start and end." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Keep only the part between start and end. Drag the handles at the ends of the timeline to set them." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             <Grid ColumnSpacing="8" RowSpacing="8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -136,8 +188,8 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
-                                <NumberBox x:Name="TrimStart" Header="Start (seconds)" Minimum="0" SmallChange="0.1" SpinButtonPlacementMode="Compact" />
-                                <NumberBox x:Name="TrimEnd" Grid.Column="1" Header="End (seconds)" Minimum="0" SmallChange="0.1" SpinButtonPlacementMode="Compact" />
+                                <NumberBox x:Name="TrimStart" Header="Start (seconds)" Minimum="0" SmallChange="0.1" SpinButtonPlacementMode="Compact" ValueChanged="OnTrimValueChanged" />
+                                <NumberBox x:Name="TrimEnd" Grid.Column="1" Header="End (seconds)" Minimum="0" SmallChange="0.1" SpinButtonPlacementMode="Compact" ValueChanged="OnTrimValueChanged" />
                                 <HyperlinkButton Grid.Row="1" Content="Use playhead" Tag="TrimStart" Click="OnUsePlayheadClick" />
                                 <HyperlinkButton Grid.Row="1" Grid.Column="1" Content="Use playhead" Tag="TrimEnd" Click="OnUsePlayheadClick" />
                             </Grid>

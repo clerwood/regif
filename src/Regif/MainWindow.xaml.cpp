@@ -29,6 +29,11 @@ namespace imaging = winrt::Microsoft::UI::Xaml::Media::Imaging;
 namespace pickers = winrt::Windows::Storage::Pickers;
 namespace streams = winrt::Windows::Storage::Streams;
 namespace datatransfer = winrt::Windows::ApplicationModel::DataTransfer;
+namespace media = winrt::Microsoft::UI::Xaml::Media;
+namespace shapes = winrt::Microsoft::UI::Xaml::Shapes;
+namespace xinput = winrt::Microsoft::UI::Xaml::Input;
+using winrt::Microsoft::UI::Input::InputSystemCursorShape;
+using ::regif::CropHandle;
 
 namespace winrt::Regif::implementation {
 namespace {
@@ -162,6 +167,46 @@ Visibility VisibleIf(bool condition)
     return condition ? Visibility::Visible : Visibility::Collapsed;
 }
 
+void Place(UIElement const& element, double left, double top, double width, double height)
+{
+    Canvas::SetLeft(element, left);
+    Canvas::SetTop(element, top);
+    auto fe = element.as<FrameworkElement>();
+    fe.Width(std::max(0.0, width));
+    fe.Height(std::max(0.0, height));
+}
+
+// Crop overlay, in screen pixels.
+constexpr double kCropGrip = 10.0;       // how close to an edge counts as grabbing it
+constexpr double kCropHandleSize = 10.0;
+constexpr double kCropMinSize = 12.0;
+constexpr std::array kCropHandles{ CropHandle::TopLeft,     CropHandle::Top,    CropHandle::TopRight,
+                                   CropHandle::Right,       CropHandle::BottomRight, CropHandle::Bottom,
+                                   CropHandle::BottomLeft,  CropHandle::Left };
+
+InputSystemCursorShape CursorFor(CropHandle handle)
+{
+    switch (handle) {
+    case CropHandle::Move: return InputSystemCursorShape::SizeAll;
+    case CropHandle::Left:
+    case CropHandle::Right: return InputSystemCursorShape::SizeWestEast;
+    case CropHandle::Top:
+    case CropHandle::Bottom: return InputSystemCursorShape::SizeNorthSouth;
+    case CropHandle::TopLeft:
+    case CropHandle::BottomRight: return InputSystemCursorShape::SizeNorthwestSoutheast;
+    case CropHandle::TopRight:
+    case CropHandle::BottomLeft: return InputSystemCursorShape::SizeNortheastSouthwest;
+    default: return InputSystemCursorShape::Arrow;
+    }
+}
+
+// Timeline, in screen pixels. The filmstrip sits between the two trim handles' widths.
+constexpr double kHandleWidth = 12.0;
+constexpr double kStripTop = 6.0;
+constexpr double kStripHeight = 56.0;
+constexpr double kTimelineHeight = 68.0;
+constexpr int kMaxThumbnails = 48;
+
 } // namespace
 
 void MainWindow::InitializeComponent()
@@ -175,12 +220,22 @@ void MainWindow::InitializeComponent()
 
     for (NumberBox box : { TrimStart(), TrimEnd(), CutStart(), CutEnd() }) UseDecimalFormat(box, 0.01);
     UseDecimalFormat(SpeedFactor(), 0.05);
+    CreateCropShapes();
+
+    m_thumbnailTimer = DispatcherQueue().CreateTimer();
+    m_thumbnailTimer.Interval(std::chrono::milliseconds(250));
+    m_thumbnailTimer.IsRepeating(false);
+    m_thumbnailTimer.Tick([this](auto&&, auto&&) {
+        if (!m_closed && WantedThumbnailCount() != static_cast<int>(m_thumbnails.size())) LoadThumbnails();
+    });
 
     Closed([this](IInspectable const&, WindowEventArgs const&) {
         m_closed = true;
         m_cancel->cancel();
         ++m_previewGeneration;
         m_grabber.reset();
+        m_thumbnailTimer.Stop();
+        if (m_thumbnailCancel) m_thumbnailCancel->store(true);
         // Deleting the session removes its working folder. A busy session is still in use by a
         // background render; it goes away with the window once that render stops.
         if (!m_busy) m_session.reset();
@@ -266,10 +321,11 @@ winrt::fire_and_forget MainWindow::OpenFile(fs::path path)
 
     ++m_previewGeneration;
     m_grabber.reset();
+    if (m_thumbnailCancel) m_thumbnailCancel->store(true); // releases the old stage file sooner
     m_session = std::move(session); // the previous session's working folder is deleted here
     Title(winrt::hstring(path.filename().wstring() + L" \u2013 regif"));
     StatusBar().IsOpen(false);
-    ScrubSlider().Value(0);
+    m_playheadSec = 0.0;
     ResetInputs();
     ShowCurrentStage();
 }
@@ -364,12 +420,8 @@ void MainWindow::OnCropClick(IInspectable const&, RoutedEventArgs const&)
 
 void MainWindow::OnCropResetClick(IInspectable const&, RoutedEventArgs const&)
 {
-    if (!m_session) return;
-    const auto& info = m_session->current().info;
-    CropX().Value(0);
-    CropY().Value(0);
-    CropWidth().Value(info.width);
-    CropHeight().Value(info.height);
+    ResetCrop();
+    LayoutCropOverlay();
 }
 
 void MainWindow::OnTrimClick(IInspectable const&, RoutedEventArgs const&)
@@ -412,7 +464,7 @@ void MainWindow::OnOptimizeClick(IInspectable const&, RoutedEventArgs const&)
 void MainWindow::OnUsePlayheadClick(IInspectable const& sender, RoutedEventArgs const&)
 {
     const auto tag = winrt::unbox_value_or<winrt::hstring>(sender.as<FrameworkElement>().Tag(), L"");
-    const double t = ScrubSlider().Value();
+    const double t = m_playheadSec;
     if (tag == L"TrimStart") TrimStart().Value(t);
     else if (tag == L"TrimEnd") TrimEnd().Value(t);
     else if (tag == L"CutStart") CutStart().Value(t);
@@ -478,6 +530,7 @@ winrt::fire_and_forget MainWindow::ShowCurrentStage()
     m_gifBitmap = nullptr;
     PreviewImage().Source(nullptr);
     RefreshUi();
+    LoadThumbnails();
     if (!m_session) co_return;
 
     const ::regif::Stage stage = m_session->current();
@@ -501,7 +554,7 @@ winrt::fire_and_forget MainWindow::ShowCurrentStage()
 
     m_grabber = grabber;
     if (!isGif) {
-        RequestFrame(ScrubSlider().Value());
+        RequestFrame(m_playheadSec);
         co_return;
     }
 
@@ -578,13 +631,453 @@ void MainWindow::OnPlayClick(IInspectable const&, RoutedEventArgs const&)
     m_gifBitmap.Play();
 }
 
-void MainWindow::OnScrubValueChanged(IInspectable const&, Primitives::RangeBaseValueChangedEventArgs const& args)
+void MainWindow::SetPlayhead(double seconds, bool showFrame)
 {
     if (!m_session) return;
-    PositionText().Text(winrt::hstring(
-        std::format(L"{:.2f} / {:.2f} s", args.NewValue(), m_session->current().info.durationSec)));
-    if (m_updatingUi) return;
-    RequestFrame(args.NewValue());
+    m_playheadSec = std::clamp(seconds, 0.0, TimelineDuration());
+    PositionText().Text(winrt::hstring(std::format(L"{:.2f} / {:.2f} s", m_playheadSec, TimelineDuration())));
+    Canvas::SetLeft(Playhead(), TimelineX(m_playheadSec) - 1.0);
+    if (showFrame) RequestFrame(m_playheadSec);
+}
+
+// ---------------------------------------------------------------------------------------
+// Crop overlay
+
+void MainWindow::CreateCropShapes()
+{
+    const media::SolidColorBrush shade(winrt::Windows::UI::Color{ 0x99, 0, 0, 0 });
+    const media::SolidColorBrush white(winrt::Windows::UI::Color{ 0xFF, 0xFF, 0xFF, 0xFF });
+    auto children = CropCanvas().Children();
+    for (int i = 0; i < 4; ++i) {
+        shapes::Rectangle r;
+        r.Fill(shade);
+        r.IsHitTestVisible(false);
+        children.Append(r);
+        m_cropShades.push_back(r);
+    }
+    m_cropBorder = shapes::Rectangle();
+    m_cropBorder.Stroke(white);
+    m_cropBorder.StrokeThickness(1.5);
+    m_cropBorder.IsHitTestVisible(false);
+    children.Append(m_cropBorder);
+    for (std::size_t i = 0; i < kCropHandles.size(); ++i) {
+        shapes::Rectangle handle;
+        handle.Fill(white);
+        handle.Stroke(shade);
+        handle.StrokeThickness(1);
+        handle.RadiusX(2);
+        handle.RadiusY(2);
+        handle.IsHitTestVisible(false);
+        children.Append(handle);
+        m_cropHandles.push_back(handle);
+    }
+}
+
+// Where the frame is drawn inside CropSurface. The surface has the image's margin, and the
+// image is Stretch="Uniform", so the frame is scaled to fit and centred.
+MainWindow::PreviewLayout MainWindow::CropLayout()
+{
+    if (!m_session) return {};
+    const auto& info = m_session->current().info;
+    const double width = CropSurface().ActualWidth();
+    const double height = CropSurface().ActualHeight();
+    if (info.width <= 0 || info.height <= 0 || width <= 0 || height <= 0) return {};
+    const double scale = std::min(width / info.width, height / info.height);
+    return { scale, (width - info.width * scale) / 2, (height - info.height * scale) / 2 };
+}
+
+double MainWindow::LockedAspect()
+{
+    switch (CropAspect().SelectedIndex()) {
+    case 1: {
+        if (!m_session) return 0.0;
+        const auto& info = m_session->current().info;
+        return info.height > 0 ? static_cast<double>(info.width) / info.height : 0.0;
+    }
+    case 2: return 1.0;
+    case 3: return 4.0 / 3.0;
+    case 4: return 3.0 / 4.0;
+    case 5: return 16.0 / 9.0;
+    case 6: return 9.0 / 16.0;
+    default: return 0.0;
+    }
+}
+
+void MainWindow::ResetCrop()
+{
+    if (!m_session) return;
+    const auto& info = m_session->current().info;
+    m_crop = { 0.0, 0.0, static_cast<double>(info.width), static_cast<double>(info.height) };
+    m_crop = ::regif::fitAspect(m_crop, LockedAspect());
+    SyncCropBoxes();
+}
+
+void MainWindow::SyncCropBoxes()
+{
+    if (!m_session) return;
+    const auto& info = m_session->current().info;
+    const ::regif::CropOp op = ::regif::toCropOp(m_crop, info.width, info.height);
+    m_syncingCrop = true;
+    CropX().Value(op.x);
+    CropY().Value(op.y);
+    CropWidth().Value(op.width);
+    CropHeight().Value(op.height);
+    m_syncingCrop = false;
+}
+
+void MainWindow::LayoutCropOverlay()
+{
+    const bool visible = m_session && m_cropEditing && m_session->current().info.width > 0 &&
+                         m_session->current().info.height > 0;
+    CropSurface().Visibility(VisibleIf(visible));
+    const PreviewLayout layout = visible ? CropLayout() : PreviewLayout{};
+    if (!layout) return; // laid out again from SizeChanged once the surface has a size
+
+    const auto& info = m_session->current().info;
+    const double s = layout.scale;
+    const double fl = layout.left, ft = layout.top, fw = info.width * s, fh = info.height * s;
+    const double x = fl + m_crop.x * s, y = ft + m_crop.y * s, w = m_crop.width * s, h = m_crop.height * s;
+
+    Place(m_cropShades[0], fl, ft, fw, y - ft);                    // above
+    Place(m_cropShades[1], fl, y + h, fw, ft + fh - (y + h));      // below
+    Place(m_cropShades[2], fl, y, x - fl, h);                      // left
+    Place(m_cropShades[3], x + w, y, fl + fw - (x + w), h);        // right
+    Place(m_cropBorder, x, y, w, h);
+
+    const std::array<std::pair<double, double>, 8> centres{ { { x, y }, { x + w / 2, y }, { x + w, y },
+                                                              { x + w, y + h / 2 }, { x + w, y + h },
+                                                              { x + w / 2, y + h }, { x, y + h }, { x, y + h / 2 } } };
+    for (std::size_t i = 0; i < centres.size(); ++i) {
+        Place(m_cropHandles[i], centres[i].first - kCropHandleSize / 2, centres[i].second - kCropHandleSize / 2,
+              kCropHandleSize, kCropHandleSize);
+    }
+}
+
+void MainWindow::OnCropValueChanged(NumberBox const&, NumberBoxValueChangedEventArgs const&)
+{
+    if (m_syncingCrop || !m_session) return;
+    const auto& info = m_session->current().info;
+    m_crop = { Value(CropX(), 0.0), Value(CropY(), 0.0), Value(CropWidth(), info.width), Value(CropHeight(), info.height) };
+    LayoutCropOverlay();
+}
+
+void MainWindow::OnCropAspectChanged(IInspectable const&, SelectionChangedEventArgs const&)
+{
+    if (!m_session) return;
+    const double aspect = LockedAspect();
+    if (aspect <= 0.0) return;
+    m_crop = ::regif::fitAspect(m_crop, aspect);
+    SyncCropBoxes();
+    LayoutCropOverlay();
+}
+
+void MainWindow::OnCropExpanding(Expander const&, ExpanderExpandingEventArgs const&)
+{
+    m_cropEditing = true;
+    LayoutCropOverlay();
+}
+
+void MainWindow::OnCropCollapsed(Expander const&, ExpanderCollapsedEventArgs const&)
+{
+    m_cropEditing = false;
+    LayoutCropOverlay();
+}
+
+void MainWindow::OnCropSurfaceSizeChanged(IInspectable const&, SizeChangedEventArgs const&)
+{
+    LayoutCropOverlay();
+}
+
+void MainWindow::OnCropPointerPressed(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+{
+    const PreviewLayout layout = CropLayout();
+    if (m_busy || !layout) return;
+    const auto p = args.GetCurrentPoint(CropSurface()).Position();
+    const CropHandle handle = ::regif::hitTestCrop(m_crop, (p.X - layout.left) / layout.scale,
+                                                   (p.Y - layout.top) / layout.scale, kCropGrip / layout.scale);
+    if (handle == CropHandle::None) return;
+    m_cropDrag = handle;
+    m_cropDragStart = m_crop;
+    m_cropDragOrigin = p;
+    CropSurface().CapturePointer(args.Pointer());
+    args.Handled(true);
+}
+
+void MainWindow::OnCropPointerMoved(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+{
+    const PreviewLayout layout = CropLayout();
+    if (!layout) return;
+    const auto p = args.GetCurrentPoint(CropSurface()).Position();
+    if (m_cropDrag == CropHandle::None) {
+        const CropHandle hover = ::regif::hitTestCrop(m_crop, (p.X - layout.left) / layout.scale,
+                                                      (p.Y - layout.top) / layout.scale, kCropGrip / layout.scale);
+        CropSurface().SetCursor(CursorFor(m_busy ? CropHandle::None : hover));
+        return;
+    }
+
+    const auto& info = m_session->current().info;
+    m_crop = ::regif::dragCrop(m_cropDragStart, m_cropDrag, (p.X - m_cropDragOrigin.X) / layout.scale,
+                               (p.Y - m_cropDragOrigin.Y) / layout.scale, info.width, info.height, LockedAspect(),
+                               kCropMinSize / layout.scale);
+    SyncCropBoxes();
+    LayoutCropOverlay();
+    args.Handled(true);
+}
+
+void MainWindow::OnCropPointerReleased(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+{
+    if (m_cropDrag == CropHandle::None) return;
+    m_cropDrag = CropHandle::None;
+    CropSurface().ReleasePointerCapture(args.Pointer());
+    args.Handled(true);
+}
+
+void MainWindow::OnCropPointerCaptureLost(IInspectable const&, xinput::PointerRoutedEventArgs const&)
+{
+    m_cropDrag = CropHandle::None;
+}
+
+// ---------------------------------------------------------------------------------------
+// Timeline
+
+double MainWindow::TimelineDuration()
+{
+    return m_session ? std::max(0.0, m_session->current().info.durationSec) : 0.0;
+}
+
+double MainWindow::TimelineX(double seconds)
+{
+    const double strip = std::max(0.0, TimelineSurface().ActualWidth() - 2 * kHandleWidth);
+    const double duration = TimelineDuration();
+    return kHandleWidth + (duration > 0.0 ? std::clamp(seconds / duration, 0.0, 1.0) * strip : 0.0);
+}
+
+double MainWindow::TimelineSeconds(double x)
+{
+    const double strip = TimelineSurface().ActualWidth() - 2 * kHandleWidth;
+    if (strip <= 0.0) return 0.0;
+    return std::clamp((x - kHandleWidth) / strip, 0.0, 1.0) * TimelineDuration();
+}
+
+double MainWindow::FrameStep()
+{
+    const double fps = m_session ? m_session->current().info.frameRate : 0.0;
+    return fps > 0.0 ? 1.0 / fps : 0.05;
+}
+
+int MainWindow::WantedThumbnailCount()
+{
+    if (!m_session) return 0;
+    const auto& info = m_session->current().info;
+    const double strip = TimelineSurface().ActualWidth() - 2 * kHandleWidth;
+    if (strip <= 0.0 || info.width <= 0 || info.height <= 0 || info.durationSec <= 0.0) return 0;
+    const double thumbWidth = std::max(24.0, kStripHeight * info.width / info.height);
+    return std::clamp(static_cast<int>(std::ceil(strip / thumbWidth)), 1, kMaxThumbnails);
+}
+
+// Decodes the filmstrip for the current stage on a background thread with its own grabber,
+// so it never waits behind (or delays) the preview frame. Stills appear as they're decoded.
+winrt::fire_and_forget MainWindow::LoadThumbnails()
+{
+    if (m_thumbnailCancel) m_thumbnailCancel->store(true);
+    m_thumbnailCancel.reset();
+    FilmstripCanvas().Children().Clear();
+    m_thumbnails.clear();
+
+    const int count = WantedThumbnailCount();
+    if (!m_session || count <= 0) co_return;
+    const ::regif::MediaInfo info = m_session->current().info;
+    const fs::path file = m_session->current().file;
+    m_thumbnails.assign(static_cast<std::size_t>(count), Image{ nullptr });
+
+    // Big enough to cover a slot (the stills are UniformToFill) at the display's scale.
+    const double slot = (TimelineSurface().ActualWidth() - 2 * kHandleWidth) / count;
+    const double cover = std::max(slot / info.width, kStripHeight / info.height);
+    const double raster = TimelineSurface().XamlRoot() ? TimelineSurface().XamlRoot().RasterizationScale() : 1.0;
+    const int maxDimension = static_cast<int>(std::ceil(std::max(info.width, info.height) * cover * raster));
+    const std::vector<double> times = ::regif::thumbnailTimes(info.durationSec, count);
+
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    m_thumbnailCancel = cancel;
+    auto lifetime = get_strong();
+    auto queue = DispatcherQueue();
+    auto weak = get_weak();
+
+    co_await winrt::resume_background();
+    try {
+        ::regif::FrameGrabber grabber(file);
+        grabber.grabSequence(times, maxDimension, [&](std::size_t index, ::regif::VideoFrameBgra&& frame) {
+            if (cancel->load()) return false;
+            auto still = std::make_shared<::regif::VideoFrameBgra>(std::move(frame));
+            queue.TryEnqueue([weak, cancel, index, count, still] {
+                auto self = weak.get();
+                if (self && !cancel->load() && !self->m_closed) self->AddThumbnail(index, count, *still);
+            });
+            return !cancel->load();
+        });
+    } catch (...) {
+        // The filmstrip is decoration; the timeline works without it.
+    }
+}
+
+void MainWindow::AddThumbnail(std::size_t index, int count, const ::regif::VideoFrameBgra& frame)
+{
+    if (count != static_cast<int>(m_thumbnails.size()) || index >= m_thumbnails.size() || frame.width <= 0 ||
+        frame.height <= 0)
+        return;
+    imaging::WriteableBitmap bitmap(frame.width, frame.height);
+    auto buffer = bitmap.PixelBuffer();
+    std::memcpy(buffer.data(), frame.pixels.data(), std::min<std::size_t>(buffer.Capacity(), frame.pixels.size()));
+    bitmap.Invalidate();
+
+    Image image;
+    image.Source(bitmap);
+    image.Stretch(media::Stretch::UniformToFill);
+    image.IsHitTestVisible(false);
+    FilmstripCanvas().Children().Append(image);
+    m_thumbnails[index] = image;
+    LayoutTimeline();
+}
+
+void MainWindow::LayoutTimeline()
+{
+    const double strip = std::max(0.0, TimelineSurface().ActualWidth() - 2 * kHandleWidth);
+    const double duration = TimelineDuration();
+    const bool active = m_session && duration > 0.0 && strip > 0.0;
+
+    Place(FilmstripBackground(), kHandleWidth, kStripTop, strip, kStripHeight);
+    Place(FilmstripCanvas(), kHandleWidth, kStripTop, strip, kStripHeight);
+    media::RectangleGeometry clip;
+    clip.Rect({ 0, 0, static_cast<float>(strip), static_cast<float>(kStripHeight) });
+    FilmstripCanvas().Clip(clip);
+    if (!m_thumbnails.empty()) {
+        const double slot = strip / static_cast<double>(m_thumbnails.size());
+        for (std::size_t i = 0; i < m_thumbnails.size(); ++i) {
+            // One pixel of overlap hides seams from rounding.
+            if (m_thumbnails[i]) Place(m_thumbnails[i], static_cast<double>(i) * slot, 0, std::ceil(slot) + 1, kStripHeight);
+        }
+    }
+
+    for (UIElement e : { TrimShadeStart().as<UIElement>(), TrimShadeEnd().as<UIElement>(), TrimFrame().as<UIElement>(),
+                         TrimHandleStart().as<UIElement>(), TrimHandleEnd().as<UIElement>(), Playhead().as<UIElement>() })
+        e.Visibility(VisibleIf(active));
+    if (!active) return;
+
+    const double start = std::clamp(Value(TrimStart(), 0.0), 0.0, duration);
+    const double end = std::clamp(Value(TrimEnd(), duration), start, duration);
+    const double xs = TimelineX(start), xe = TimelineX(end);
+    Place(TrimShadeStart(), kHandleWidth, kStripTop, xs - kHandleWidth, kStripHeight);
+    Place(TrimShadeEnd(), xe, kStripTop, kHandleWidth + strip - xe, kStripHeight);
+    Place(TrimFrame(), xs, kStripTop - 3, xe - xs, kStripHeight + 6);
+    Place(TrimHandleStart(), xs - kHandleWidth, kStripTop - 3, kHandleWidth, kStripHeight + 6);
+    Place(TrimHandleEnd(), xe, kStripTop - 3, kHandleWidth, kStripHeight + 6);
+    Place(Playhead(), TimelineX(m_playheadSec) - 1.0, 0, 2, kTimelineHeight);
+}
+
+void MainWindow::SetTrimPoint(bool start, double seconds)
+{
+    const double duration = TimelineDuration();
+    const double step = FrameStep();
+    const double trimStart = Value(TrimStart(), 0.0);
+    const double trimEnd = Value(TrimEnd(), duration);
+    if (start) {
+        seconds = std::clamp(seconds, 0.0, std::max(0.0, trimEnd - step));
+        TrimStart().Value(seconds);
+    } else {
+        seconds = std::clamp(seconds, std::min(duration, trimStart + step), duration);
+        TrimEnd().Value(seconds);
+    }
+    TrimExpander().IsExpanded(true); // so the Trim button is at hand
+    SetPlayhead(seconds);            // show the frame at the trim point
+}
+
+void MainWindow::OnTrimValueChanged(NumberBox const&, NumberBoxValueChangedEventArgs const&)
+{
+    LayoutTimeline();
+}
+
+void MainWindow::OnTimelineSizeChanged(IInspectable const&, SizeChangedEventArgs const&)
+{
+    LayoutTimeline();
+    if (WantedThumbnailCount() != static_cast<int>(m_thumbnails.size())) {
+        m_thumbnailTimer.Stop();
+        m_thumbnailTimer.Start();
+    }
+}
+
+void MainWindow::OnTimelinePointerPressed(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+{
+    if (!m_session || m_busy || TimelineDuration() <= 0.0) return;
+    TimelineSurface().Focus(FocusState::Pointer);
+    const double x = args.GetCurrentPoint(TimelineSurface()).Position().X;
+    const double xs = TimelineX(Value(TrimStart(), 0.0));
+    const double xe = TimelineX(Value(TrimEnd(), TimelineDuration()));
+    const bool onStart = x >= xs - kHandleWidth - 2 && x <= xs + 3;
+    const bool onEnd = x >= xe - 3 && x <= xe + kHandleWidth + 2;
+
+    if (onStart && (!onEnd || x <= (xs + xe) / 2)) {
+        m_timelineDrag = TimelineDrag::TrimStart;
+        m_timelineGrabOffset = x - xs;
+    } else if (onEnd) {
+        m_timelineDrag = TimelineDrag::TrimEnd;
+        m_timelineGrabOffset = x - xe;
+    } else {
+        m_timelineDrag = TimelineDrag::Seek;
+        SetPlayhead(TimelineSeconds(x));
+    }
+    TimelineSurface().CapturePointer(args.Pointer());
+    args.Handled(true);
+}
+
+void MainWindow::OnTimelinePointerMoved(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+{
+    if (!m_session) return;
+    const double x = args.GetCurrentPoint(TimelineSurface()).Position().X;
+    switch (m_timelineDrag) {
+    case TimelineDrag::None: {
+        const double xs = TimelineX(Value(TrimStart(), 0.0));
+        const double xe = TimelineX(Value(TrimEnd(), TimelineDuration()));
+        const bool onHandle = (x >= xs - kHandleWidth - 2 && x <= xs + 3) || (x >= xe - 3 && x <= xe + kHandleWidth + 2);
+        TimelineSurface().SetCursor(onHandle && !m_busy ? InputSystemCursorShape::SizeWestEast
+                                                        : InputSystemCursorShape::Arrow);
+        return;
+    }
+    case TimelineDrag::Seek: SetPlayhead(TimelineSeconds(x)); break;
+    case TimelineDrag::TrimStart: SetTrimPoint(true, TimelineSeconds(x - m_timelineGrabOffset)); break;
+    case TimelineDrag::TrimEnd: SetTrimPoint(false, TimelineSeconds(x - m_timelineGrabOffset)); break;
+    }
+    args.Handled(true);
+}
+
+void MainWindow::OnTimelinePointerReleased(IInspectable const&, xinput::PointerRoutedEventArgs const& args)
+{
+    if (m_timelineDrag == TimelineDrag::None) return;
+    m_timelineDrag = TimelineDrag::None;
+    TimelineSurface().ReleasePointerCapture(args.Pointer());
+    args.Handled(true);
+}
+
+void MainWindow::OnTimelinePointerCaptureLost(IInspectable const&, xinput::PointerRoutedEventArgs const&)
+{
+    m_timelineDrag = TimelineDrag::None;
+}
+
+void MainWindow::OnTimelineKeyDown(IInspectable const&, xinput::KeyRoutedEventArgs const& args)
+{
+    if (!m_session || m_busy || TimelineDuration() <= 0.0) return;
+    using winrt::Windows::System::VirtualKey;
+    switch (args.Key()) {
+    case VirtualKey::Left: SetPlayhead(m_playheadSec - FrameStep()); break;
+    case VirtualKey::Right: SetPlayhead(m_playheadSec + FrameStep()); break;
+    case VirtualKey::PageUp: SetPlayhead(m_playheadSec - 1.0); break;
+    case VirtualKey::PageDown: SetPlayhead(m_playheadSec + 1.0); break;
+    case VirtualKey::Home: SetPlayhead(0.0); break;
+    case VirtualKey::End: SetPlayhead(TimelineDuration()); break;
+    case VirtualKey::I: SetTrimPoint(true, m_playheadSec); break;
+    case VirtualKey::O: SetTrimPoint(false, m_playheadSec); break;
+    default: return;
+    }
+    args.Handled(true);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -595,10 +1088,7 @@ void MainWindow::ResetInputs()
     if (!m_session) return;
     const auto& info = m_session->current().info;
     const double duration = std::max(0.0, info.durationSec);
-    CropX().Value(0);
-    CropY().Value(0);
-    CropWidth().Value(info.width);
-    CropHeight().Value(info.height);
+    ResetCrop();
     TrimStart().Value(0);
     TrimEnd().Value(duration);
     CutStart().Value(0);
@@ -627,12 +1117,15 @@ void MainWindow::RefreshUi()
     HistoryHeader().Visibility(VisibleIf(hasSession));
     HistoryList().IsEnabled(idle);
     ScrubPanel().Visibility(VisibleIf(hasSession));
+    CropSurface().IsHitTestVisible(idle);
 
     auto items = HistoryList().Items();
     items.Clear();
     if (!hasSession) {
         StageTitle().Text(L"No file open");
         StageDetails().Text(L"");
+        LayoutCropOverlay();
+        LayoutTimeline();
         m_updatingUi = false;
         return;
     }
@@ -653,14 +1146,16 @@ void MainWindow::RefreshUi()
     if (current > 0 && !isGif) details += L"\nVideo stages are kept lossless (Matroska, FFV1).";
     StageDetails().Text(winrt::hstring(details));
 
-    ScrubSlider().Maximum(std::max(0.0, info.durationSec));
-    ScrubSlider().IsEnabled(info.durationSec > 0.0);
-    PositionText().Text(winrt::hstring(std::format(L"{:.2f} / {:.2f} s", ScrubSlider().Value(), info.durationSec)));
+    m_playheadSec = std::clamp(m_playheadSec, 0.0, std::max(0.0, info.durationSec));
+    TimelineSurface().IsEnabled(info.durationSec > 0.0);
+    PositionText().Text(winrt::hstring(std::format(L"{:.2f} / {:.2f} s", m_playheadSec, info.durationSec)));
 
     for (std::size_t i = 0; i < stages.size(); ++i)
         items.Append(winrt::box_value(winrt::hstring(std::format(L"{}. {}", i + 1, Wide(stages[i].label)))));
     HistoryList().SelectedIndex(static_cast<int32_t>(current));
 
+    LayoutCropOverlay();
+    LayoutTimeline();
     m_updatingUi = false;
 }
 
