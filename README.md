@@ -2,8 +2,7 @@
 
 Turn videos into GIFs, edit GIFs, and add titles and captions, on Windows.
 
-> **Pre-release.** regif is new and still rough in places. Please
-> [report anything odd](https://github.com/clerwood/regif/issues).
+Found a bug or have an idea? [Open an issue](https://github.com/clerwood/regif/issues).
 
 ## Features
 
@@ -24,12 +23,12 @@ Turn videos into GIFs, edit GIFs, and add titles and captions, on Windows.
 
 regif needs **Windows 10 (version 1809 or later) or Windows 11, 64-bit**.
 
-1. Go to the [latest release](https://github.com/clerwood/regif/releases) and download one of:
+1. Go to the [latest release](https://github.com/clerwood/regif/releases/latest) and download one of:
    - **`regif-…-x64-setup.exe`**, an installer. By default it installs just for you, without
      needing administrator rights.
    - **`regif-…-x64-portable.zip`**, if you'd rather not install anything. Unzip it anywhere and
      run `Regif.exe`.
-2. Pre-releases aren't code-signed yet, so Windows may show **"Windows protected your PC"**.
+2. regif isn't code-signed yet, so Windows may show **"Windows protected your PC"**.
    Choose **More info**, then **Run anyway**.
 
 To uninstall, find regif in **Settings > Apps**. To remove the portable version, delete its folder.
